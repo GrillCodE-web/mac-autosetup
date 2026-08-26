@@ -118,6 +118,8 @@ check_link() {
 check_link "$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable" "Telegram"
 check_link "$HOME/Library/Application Support/Sublime Text" "Sublime Text"
 check_link "$HOME/Library/Application Support/app.ls" "Sphere"
+[ -d "/Applications/MailMate.app" ] && check_link "$HOME/Library/Application Support/MailMate" "MailMate"
+[ -d "/Applications/qTox.app" ] && check_link "$HOME/Library/Application Support/Tox" "qTox"
 
 # --- 6. Приложения на месте ---
 for APP in "VeraCrypt" "Telegram"; do

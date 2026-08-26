@@ -240,6 +240,14 @@ case "$KB_CH" in
 esac
 
 echo ""
+echo "8) $(L 'Дополнительные программы (по желанию).' 'Optional extra apps.')"
+echo "   $(L 'Их данные тоже уедут на зашифрованный диск (симлинками).' 'Their data also goes to the encrypted disk (via symlinks).')"
+read -r -p "   $(L 'Ставить MailMate (почтовый клиент)? (да/нет) [нет]' 'Install MailMate (email client)? (yes/no) [no]'): " INSTALL_MM
+INSTALL_MM=$(yn "${INSTALL_MM:-нет}")
+read -r -p "   $(L 'Ставить qTox (мессенджер Tox)? (да/нет) [нет]' 'Install qTox (Tox messenger)? (yes/no) [no]'): " INSTALL_QTOX
+INSTALL_QTOX=$(yn "${INSTALL_QTOX:-нет}")
+
+echo ""
 ok "$(L 'Все вопросы заданы. Дальше скрипт работает сам (пару раз попросит вставить диск).' 'All questions done. The script runs on its own now (it will ask to insert the disk a couple of times).')"
 
 # ------------------------------------------------------------
@@ -480,6 +488,8 @@ app_installed() {
         "Sublime Text") [ -d "/Applications/Sublime Text.app" ] ;;
         "Sphere")       [ -n "$(find /Applications -maxdepth 1 -iname '*sphere*' -o -iname 'ls*.app' 2>/dev/null | head -1)" ] ;;
         "Tukan")        [ -n "$(find /Applications -maxdepth 1 -iname '*tukan*' 2>/dev/null | head -1)" ] ;;
+        "MailMate")     [ -d "/Applications/MailMate.app" ] ;;
+        "qTox")         [ -d "/Applications/qTox.app" ] ;;
         *) return 1 ;;
     esac
 }
@@ -507,6 +517,21 @@ install_dmg() {
             ok "$appname установлен (pkg)."
         else
             err "$appname: установка pkg не удалась — поставь вручную."
+        fi
+        return 0
+    fi
+    if [[ "$fname" == *.tbz || "$fname" == *.tar.bz2 || "$fname" == *.tbz2 ]]; then
+        rm -rf "$DL/untar_$appname"
+        mkdir -p "$DL/untar_$appname"
+        run tar -xjf "$dmg" -C "$DL/untar_$appname"
+        local tapp
+        tapp=$(find "$DL/untar_$appname" -maxdepth 2 -name "*.app" | head -1)
+        if [ -n "$tapp" ]; then
+            as_root cp -R "$tapp" /Applications/ 2>/dev/null
+            as_root xattr -dr com.apple.quarantine "/Applications/$(basename "$tapp")" 2>/dev/null
+            ok "$appname установлен."
+        else
+            warn "$appname: в архиве нет .app — поставь вручную."
         fi
         return 0
     fi
@@ -597,6 +622,32 @@ install_dmg "$SPHERE_URL" "Sphere"
 
 # Tukan
 install_dmg "https://tukan.me/download/mac" "Tukan" "Tukan.dmg"
+
+# MailMate (по желанию) — раздается архивом .tbz; берем актуальную сборку 2.0 (её рекомендует разработчик)
+if [ "$INSTALL_MM" = "да" ]; then
+    install_dmg "https://updates.mailmate-app.com/archives/MailMateBeta.tbz" "MailMate" "MailMate.tbz"
+fi
+
+# qTox (по желанию) — актуальный релиз форка TokTok, dmg под свой процессор
+if [ "$INSTALL_QTOX" = "да" ]; then
+    if ! app_installed "qTox"; then
+        wait_for_internet
+        [ "$(uname -m)" = "arm64" ] && QT_ARCH="arm64" || QT_ARCH="x86_64"
+        QTOX_URL=$(curl -L -s https://api.github.com/repos/TokTok/qTox/releases/latest 2>/dev/null \
+            | grep -o "https://[^\"]*qTox-v[0-9.]*\.${QT_ARCH}-12\.0\.dmg" | head -1)
+        if [ -z "$QTOX_URL" ]; then
+            QTOX_URL=$(curl -L -s https://api.github.com/repos/TokTok/qTox/releases/latest 2>/dev/null \
+                | grep -o "https://[^\"]*${QT_ARCH}[^\"]*\.dmg" | head -1)
+        fi
+    fi
+    if app_installed "qTox"; then
+        ok "qTox уже установлен — пропускаю."
+    elif [ -n "$QTOX_URL" ]; then
+        install_dmg "$QTOX_URL" "qTox" "qTox.dmg"
+    else
+        err "qTox: не смог получить ссылку на релиз (github.com/TokTok/qTox/releases) — поставь вручную."
+    fi
+fi
 
 # ------------------------------------------------------------
 # ФАЗА 4: FILEVAULT
@@ -864,6 +915,8 @@ else
     fi
     [ ! -d "$DATA/Sublime Text" ] && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }
     [ ! -d "$DATA/app.ls" ] && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }
+    [ ! -d "$DATA/MailMate" ] && { MM_FOUND=$(deep_find "MailMate"); [ -n "$MM_FOUND" ] && link_in_place "$MM_FOUND" "$HOME/Library/Application Support/MailMate"; }
+    [ ! -d "$DATA/Tox" ] && { TOX_FOUND=$(deep_find "Tox"); [ -n "$TOX_FOUND" ] && link_in_place "$TOX_FOUND" "$HOME/Library/Application Support/Tox"; }
     if ! find "$DATA" -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
         TK_FOUND=$(deep_find "*tukan*")
         [ -n "$TK_FOUND" ] && link_in_place "$TK_FOUND" "$HOME/Library/Application Support/$(basename "$TK_FOUND")"
@@ -955,6 +1008,16 @@ else
     ensure_app "$HOME/Library/Application Support/Sublime Text" "Sublime Text"
     ensure_app "$HOME/Library/Application Support/app.ls" "app.ls"
 
+    # MailMate: почта (Messages) и настройки аккаунтов — только на диске
+    if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ] || [ -e "$HOME/Library/Application Support/MailMate" ]; then
+        ensure_app "$HOME/Library/Application Support/MailMate" "MailMate"
+    fi
+
+    # qTox: профиль .tox, история переписки и настройки — только на диске
+    if [ "$INSTALL_QTOX" = "да" ] || [ -d "/Applications/qTox.app" ] || [ -e "$HOME/Library/Application Support/Tox" ]; then
+        ensure_app "$HOME/Library/Application Support/Tox" "Tox"
+    fi
+
     TUKAN_DIR=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
     if [ -n "$TUKAN_DIR" ]; then
         ensure_app "$TUKAN_DIR" "$(basename "$TUKAN_DIR")"
@@ -1003,6 +1066,12 @@ echo "     TUKAN: set TWO passwords — one to log in, the SECOND one wipes the 
 echo "     The second password erases everything — never share it and never test it."
 echo "  5. Раскладки: Настройки -> Клавиатура -> Источники ввода — должны быть U.S. и Русская."
 echo "     Layouts: Settings -> Keyboard -> Input Sources — must list U.S. and Russian."
+if [ "$INSTALL_MM" = "да" ] || [ "$INSTALL_QTOX" = "да" ]; then
+    echo "  5a. MailMate / qTox: запусти каждую программу 1 раз при ПОДКЛЮЧЕННОМ диске —"
+    echo "      почта и профиль Tox создадутся сразу на диске (папки уже подключены симлинками)."
+    echo "      MailMate / qTox: launch each once WITH the disk mounted — mail and the Tox"
+    echo "      profile will be created straight on the disk (folders are already symlinked)."
+fi
 if [ "$KB_MANUAL" = "1" ]; then
     echo "  6. Там же поставь галочку «Использовать Caps Lock для переключения раскладки»."
     echo "     There, tick «Use Caps Lock key to switch input source»."
