@@ -25,9 +25,8 @@ ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[$(L 'ОШИБКА' 'ERROR')]${NC} $1"; }
 
-# Двуязычный вывод: L "русский" "english" -> печатает по выбранному языку
-UILANG=ru
-L() { if [ "$UILANG" = "en" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+# Двуязычный вывод: L "русский" "english" -> печатает СРАЗУ оба языка (дублирует)
+L() { printf '%s / %s' "$1" "$2"; }
 # Нормализация ответа да/нет на обоих языках -> всегда "да" или "нет"
 yn() {
     case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
@@ -75,11 +74,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 chmod +x "$SCRIPT_DIR/ПРОВЕРИТЬ.command" 2>/dev/null
 
 clear
-echo "Выбери язык / Choose language:"
-echo "   1 — Русский"
-echo "   2 — English"
-read -r -p "   [1]: " LANG_CH
-[ "$LANG_CH" = "2" ] && UILANG=en || UILANG=ru
 
 step "$(L 'НАЧАЛО НАСТРОЙКИ' 'SETUP START')"
 echo "$(L 'Сейчас скрипт настроит этот Mac полностью сам.' 'This script will set up this Mac automatically.')"
@@ -209,6 +203,43 @@ else
 fi
 
 echo ""
+echo "5) $(L 'Через сколько ГАСИТЬ ЭКРАН (сон дисплея).' 'Display sleep timeout.')"
+echo "   1 — 1 $(L 'мин' 'min')   2 — 2 $(L 'мин' 'min')   3 — 5 $(L 'мин' 'min') ($(L 'по умолчанию' 'default'))"
+echo "   4 — 10 $(L 'мин' 'min')  5 — 15 $(L 'мин' 'min')  6 — 30 $(L 'мин' 'min')  7 — $(L 'никогда' 'never')"
+read -r -p "   $(L 'Выбор' 'Choice') [3]: " DS_CH
+case "${DS_CH:-3}" in
+    1) DISPLAY_SLEEP=1 ;; 2) DISPLAY_SLEEP=2 ;; 3) DISPLAY_SLEEP=5 ;;
+    4) DISPLAY_SLEEP=10 ;; 5) DISPLAY_SLEEP=15 ;; 6) DISPLAY_SLEEP=30 ;; 7) DISPLAY_SLEEP=0 ;;
+    *) warn "$(L 'Непонятный ответ — беру 5 минут.' 'Unknown answer — using 5 minutes.')"; DISPLAY_SLEEP=5 ;;
+esac
+
+echo ""
+echo "6) $(L 'Через сколько АВТОВЫХОД из системы (бездействие).' 'Auto logout after idle.')"
+echo "   1 — 5 $(L 'мин' 'min')   2 — 10 $(L 'мин' 'min')  3 — 15 $(L 'мин' 'min')"
+echo "   4 — 30 $(L 'мин' 'min') ($(L 'по умолчанию' 'default'))  5 — 60 $(L 'мин' 'min')  6 — $(L 'выключить' 'off')"
+read -r -p "   $(L 'Выбор' 'Choice') [4]: " AL_CH
+case "${AL_CH:-4}" in
+    1) AUTOLOGOUT_MIN=5 ;; 2) AUTOLOGOUT_MIN=10 ;; 3) AUTOLOGOUT_MIN=15 ;;
+    4) AUTOLOGOUT_MIN=30 ;; 5) AUTOLOGOUT_MIN=60 ;; 6) AUTOLOGOUT_MIN=0 ;;
+    *) warn "$(L 'Непонятный ответ — беру 30 минут.' 'Unknown answer — using 30 minutes.')"; AUTOLOGOUT_MIN=30 ;;
+esac
+
+echo ""
+echo "7) $(L 'Раскладки клавиатуры: английская + русская.' 'Keyboard layouts: English + Russian.')"
+echo "   $(L 'Сочетание для переключения:' 'Switch shortcut:')"
+echo "   1 — Ctrl + Space ($(L 'по умолчанию' 'default'))"
+echo "   2 — Option(Alt) + Space"
+echo "   3 — Cmd + Space ($(L 'Spotlight переедет на Ctrl+Cmd+Space' 'Spotlight moves to Ctrl+Cmd+Space'))"
+echo "   4 — Caps Lock ($(L 'штатное переключение macOS' 'native macOS switching')) "
+echo "   5 — $(L 'не трогать сочетание' 'do not change shortcut')"
+read -r -p "   $(L 'Выбор' 'Choice') [1]: " KB_CH
+KB_CH=${KB_CH:-1}
+case "$KB_CH" in
+    1|2|3|4|5) ;;
+    *) warn "$(L 'Непонятный ответ — беру Ctrl+Space.' 'Unknown answer — using Ctrl+Space.')"; KB_CH=1 ;;
+esac
+
+echo ""
 ok "$(L 'Все вопросы заданы. Дальше скрипт работает сам (пару раз попросит вставить диск).' 'All questions done. The script runs on its own now (it will ask to insert the disk a couple of times).')"
 
 # ------------------------------------------------------------
@@ -249,13 +280,74 @@ else
     warn "Пароль при блокировке: задан старым способом — в конце проверь руками (пункт в списке доделок)."
 fi
 
-# Выключение дисплея через 5 минут
-as_root pmset -a displaysleep 5 &>/dev/null
-ok "Дисплей выключается через 5 минут."
+# Выключение дисплея (выбрано в вопросе 5; 0 = никогда)
+DISPLAY_SLEEP=${DISPLAY_SLEEP:-5}
+as_root pmset -a displaysleep "$DISPLAY_SLEEP" &>/dev/null
+if [ "$DISPLAY_SLEEP" = "0" ]; then
+    ok "$(L 'Дисплей не гаснет по таймеру (выбрано «никогда»).' 'Display never sleeps (you chose never).')"
+else
+    ok "$(L 'Дисплей выключается через' 'Display sleeps after') $DISPLAY_SLEEP $(L 'мин.' 'min.')"
+fi
 
-# Автовыход из системы через 30 минут
-as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int 1800
-ok "Автовыход из системы через 30 минут."
+# Автовыход из системы (выбрано в вопросе 6; 0 = выключить)
+AUTOLOGOUT_MIN=${AUTOLOGOUT_MIN:-30}
+if [ "$AUTOLOGOUT_MIN" = "0" ]; then
+    as_root defaults delete /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null
+    ok "$(L 'Автовыход из системы выключен.' 'Auto logout is off.')"
+else
+    as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int $((AUTOLOGOUT_MIN * 60))
+    ok "$(L 'Автовыход из системы через' 'Auto logout after') $AUTOLOGOUT_MIN $(L 'мин.' 'min.')"
+fi
+
+# Раскладки клавиатуры: английская (уже есть) + русская, и сочетание переключения
+KB_PLIST="$HOME/Library/Preferences/com.apple.HIToolbox.plist"
+US_SRC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>0</integer><key>KeyboardLayout Name</key><string>U.S.</string></dict>'
+RU_SRC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>19456</integer><key>KeyboardLayout Name</key><string>Russian</string></dict>'
+defaults write com.apple.HIToolbox AppleEnabledInputSources -array "$US_SRC" "$RU_SRC" 2>/dev/null
+defaults write com.apple.HIToolbox AppleInputSourceHistory -array "$US_SRC" "$RU_SRC" 2>/dev/null
+defaults write com.apple.HIToolbox AppleSelectedInputSources -array "$US_SRC" "$RU_SRC" 2>/dev/null
+if [ -f "$KB_PLIST" ]; then
+    ok "$(L 'Раскладки: английская (U.S.) + русская (применятся после перезагрузки).' 'Layouts: English (U.S.) + Russian (applied after reboot).')"
+else
+    warn "$(L 'Не смог записать раскладки — добавь русскую руками: Настройки -> Клавиатура -> Источники ввода.' 'Could not set layouts — add Russian manually: Settings -> Keyboard -> Input Sources.')"
+fi
+
+# Сочетание переключения раскладки (AppleSymbolicHotKeys: 60 — предыдущий источник, 61 — следующий)
+set_hotkey() {
+    local id="$1" char="$2" code="$3" mod="$4" enabled="$5"
+    local PB=/usr/libexec/PlistBuddy f="$HOME/Library/Preferences/com.apple.symbolichotkeys.plist"
+    logcmd PlistBuddy "set hotkey $id enabled=$enabled"
+    $PB -c "Add :AppleSymbolicHotKeys dict" "$f" 2>/dev/null
+    $PB -c "Delete :AppleSymbolicHotKeys:$id" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id dict" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id:enabled bool $enabled" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id:value dict" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id:value:type string standard" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id:value:parameters array" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id:value:parameters: integer $char" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id:value:parameters: integer $code" "$f" 2>/dev/null
+    $PB -c "Add :AppleSymbolicHotKeys:$id:value:parameters: integer $mod" "$f" 2>/dev/null
+}
+KB_CH=${KB_CH:-1}
+case "$KB_CH" in
+    1)  set_hotkey 60 32 49 262144 true
+        set_hotkey 61 32 49 786432 true
+        ok "$(L 'Переключение раскладки: Ctrl + Space.' 'Layout switch: Ctrl + Space.')" ;;
+    2)  set_hotkey 60 32 49 524288 true
+        set_hotkey 61 32 49 1572864 true
+        ok "$(L 'Переключение раскладки: Option(Alt) + Space.' 'Layout switch: Option(Alt) + Space.')" ;;
+    3)  set_hotkey 64 32 49 1048576 false
+        set_hotkey 65 32 49 1572864 false
+        set_hotkey 60 32 49 1048576 true
+        set_hotkey 61 32 49 1310720 true
+        ok "$(L 'Переключение раскладки: Cmd + Space (Spotlight по Cmd+Space отключен).' 'Layout switch: Cmd + Space (Spotlight Cmd+Space disabled).')" ;;
+    4)  set_hotkey 60 32 49 262144 false
+        set_hotkey 61 32 49 786432 false
+        warn "$(L 'Caps Lock включается только галочкой: Настройки -> Клавиатура -> Источники ввода -> «Использовать Caps Lock для переключения» (добавлено в список доделок).' 'Caps Lock switching is a checkbox: Settings -> Keyboard -> Input Sources -> Use Caps Lock to switch (added to the manual list).')"
+        KB_MANUAL=1 ;;
+    5)  ok "$(L 'Сочетание переключения не менял.' 'Switch shortcut left as is.')" ;;
+esac
+/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null
 
 # Второй ползунок «Дополнительно»: пароль администратора для общесистемных настроек
 AUTH_TMP="/tmp/sysprefs_auth.plist"
@@ -741,41 +833,40 @@ else
             -not -path "$DATA/*" -not -path "*/.Trashes/*" \
             -not -path "*/.Spotlight-V100/*" -not -path "*/.fseventsd/*" 2>/dev/null | head -1
     }
-    move_to_data() {
-        local found="$1" rel="$2" dst="$DATA/$2"
-        [ -e "$dst" ] && return 0
+    # НИЧЕГО НЕ ПЕРЕНОСИМ: папки остаются там, где лежат на диске —
+    # к ним просто делается симлинк из системы.
+    link_in_place() {
+        local found="$1" src="$2"
+        [ -d "$found" ] || return 1
         echo ""
-        echo "Нашел данные в подпапке диска: $found"
-        read -r -p "   Перенести в DataAPP и подключить? (да/нет) [да]: " MV
-        MV=$(yn "${MV:-да}")
-        [ "$MV" != "да" ] && return 1
-        mkdir -p "$(dirname "$dst")"
-        logcmd mv "$found" "$dst"
-        if mv "$found" "$dst" 2>/dev/null; then
-            ok "$rel — перенесено в DataAPP (в пределах диска, быстро)."
-        else
-            err "$rel — не смог перенести из $found (права/занято). Перенеси вручную в $DATA."
-            return 1
-        fi
+        echo "$(L 'Нашел данные на диске:' 'Found data on the disk:') $found"
+        read -r -p "   $(L 'Подключить симлинком (ничего не переношу)? (да/нет) [да]' 'Link it with a symlink (nothing is moved)? (yes/no) [yes]'): " LK
+        LK=$(yn "${LK:-да}")
+        [ "$LK" != "да" ] && return 1
+        link_to "$src" "$found"
+        LINKED_SRC="$LINKED_SRC|$src"
+        return 0
     }
+    LINKED_SRC=""
 
-    echo "Ищу данные приложений по ВСЕМУ диску (включая подпапки)..."
+    echo "$(L 'Ищу данные приложений по ВСЕМУ диску (включая подпапки) — переносить никуда не буду.' 'Scanning the whole disk (all subfolders) — nothing will be moved.')"
+    TG_SRC="$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable"
     if [ ! -d "$DATA/Telegram/stable" ]; then
         TG_FOUND=$(deep_find "6N38VWS5BX.ru.keepcoder.Telegram")
         if [ -n "$TG_FOUND" ] && [ -d "$TG_FOUND/stable" ]; then
-            move_to_data "$TG_FOUND/stable" "Telegram/stable"
+            link_in_place "$TG_FOUND/stable" "$TG_SRC"
         else
             TG_FOUND=$(deep_find "stable")
             if [ -n "$TG_FOUND" ] && [ -e "$TG_FOUND/accounts-metadata" ]; then
-                move_to_data "$TG_FOUND" "Telegram/stable"
+                link_in_place "$TG_FOUND" "$TG_SRC"
             fi
         fi
     fi
-    [ ! -d "$DATA/Sublime Text" ] && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && move_to_data "$ST_FOUND" "Sublime Text"; }
-    [ ! -d "$DATA/app.ls" ] && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && move_to_data "$LS_FOUND" "app.ls"; }
+    [ ! -d "$DATA/Sublime Text" ] && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }
+    [ ! -d "$DATA/app.ls" ] && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }
     if ! find "$DATA" -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
         TK_FOUND=$(deep_find "*tukan*")
-        [ -n "$TK_FOUND" ] && move_to_data "$TK_FOUND" "$(basename "$TK_FOUND")"
+        [ -n "$TK_FOUND" ] && link_in_place "$TK_FOUND" "$HOME/Library/Application Support/$(basename "$TK_FOUND")"
     fi
 
     # --- 0) TELEGRAM С ФЛЕШКИ: доступа к номеру нет, сессия живет только в этих файлах ---
@@ -898,39 +989,60 @@ fi
 step "ГОТОВО"
 
 echo "Что осталось сделать РУКАМИ (2 минуты):"
+echo "What is left to do MANUALLY (2 minutes):"
 echo ""
-echo "  1. Если Tukan не перенесся — запусти его 1 раз, потом запусти этот скрипт еще раз."
+echo "  1. Если Tukan не подключился — запусти его 1 раз, потом запусти этот скрипт еще раз."
+echo "     If Tukan is not linked — launch it once, then run this script again."
 echo "  2. Настройки -> Bluetooth -> должен быть ВЫКЛ (если включен — выключи)."
+echo "     Settings -> Bluetooth -> must be OFF (turn it off if it is on)."
 echo "  3. Настройки -> Экран блокировки -> «Запрашивать пароль после включения заставки» = СРАЗУ."
+echo "     Settings -> Lock Screen -> «Require password after screen saver begins» = IMMEDIATELY."
 echo "  4. TUKAN: задай ДВА пароля — один для входа, ВТОРОЙ на удаление данных (аварийный)."
 echo "     Второй пароль стирает всё при вводе — никому не говори и не проверяй ради интереса."
+echo "     TUKAN: set TWO passwords — one to log in, the SECOND one wipes the data (panic password)."
+echo "     The second password erases everything — never share it and never test it."
+echo "  5. Раскладки: Настройки -> Клавиатура -> Источники ввода — должны быть U.S. и Русская."
+echo "     Layouts: Settings -> Keyboard -> Input Sources — must list U.S. and Russian."
+if [ "$KB_MANUAL" = "1" ]; then
+    echo "  6. Там же поставь галочку «Использовать Caps Lock для переключения раскладки»."
+    echo "     There, tick «Use Caps Lock key to switch input source»."
+fi
 echo ""
 echo -e "  ${BOLD}ГЛАВНОЕ ПРАВИЛО:${NC} ничего не храни в системе Mac и на Рабочем столе —"
 echo "  все файлы ТОЛЬКО на подключенном секретном диске. Что попало в систему,"
 echo "  можно восстановить даже после удаления. Отключил диск -> на Mac ноль твоих файлов."
+echo -e "  ${BOLD}MAIN RULE:${NC} keep nothing inside macOS or on the Desktop — all files ONLY on the"
+echo "  mounted secret disk. Anything written to the system can be recovered even after deletion."
 echo ""
 echo "  ВАЖНО: Wi-Fi выключен насовсем (работа только по кабелю)."
 echo "  Вернуть, если вдруг надо: Настройки -> Сеть -> кнопка ... -> Добавить службу -> Wi-Fi."
+echo "  IMPORTANT: Wi-Fi is disabled for good (cable only). To bring it back:"
+echo "  Settings -> Network -> ... button -> Add Service -> Wi-Fi."
 if [ "$CREATE_USER" = "да" ]; then
     echo ""
     echo "  УЧЕТКИ: работай под «$NEW_USER» (её пароль). Основная (админ) — только для установки программ."
 fi
 echo ""
 echo "ПРОВЕРКА, ЧТО ВСЁ РАБОТАЕТ (обязательно, 3 минуты):"
+echo "FINAL CHECK (mandatory, 3 minutes):"
 echo "  0. После перезагрузки запусти ПРОВЕРИТЬ.command (лежит рядом с этим скриптом) —"
 echo "     он сам проверит все настройки и покажет зеленый/красный список."
-echo "  1. Яблоко -> Перезагрузить."
+echo "     After the reboot run ПРОВЕРИТЬ.command (next to this script) — it checks everything."
+echo "  1. Яблоко -> Перезагрузить.  /  Apple menu -> Restart."
 echo "  2. После входа открой VeraCrypt (Программы -> VeraCrypt):"
+echo "     After login open VeraCrypt (Applications -> VeraCrypt):"
 echo "     - кнопка Select Device -> выбери свою флешку/диск (строка целиком) -> OK"
 echo "     - кнопка Mount -> введи пароль диска (и PIM, если задавал)"
 echo "     - если спросит пароль от Mac — введи"
 echo "     - диск появится в Finder"
-echo "  3. Открой Telegram — чаты должны быть на месте."
+echo "  3. Открой Telegram — чаты должны быть на месте.  /  Open Telegram — chats must be there."
 echo "  4. В VeraCrypt нажми Dismount, ВЫТАЩИ диск и снова открой Telegram — он должен быть ПУСТОЙ."
 echo "     Пустой = данные живут только на диске. Это и была цель."
-echo "  5. Подключи диск обратно (пункт 2) — чаты вернутся."
-echo "  6. Настройки -> Сеть: Wi-Fi в списке быть не должно."
+echo "     In VeraCrypt press Dismount, unplug the disk, open Telegram — it must be EMPTY."
+echo "  5. Подключи диск обратно (пункт 2) — чаты вернутся.  /  Mount the disk again — chats return."
+echo "  6. Настройки -> Сеть: Wi-Fi в списке быть не должно.  /  Settings -> Network: no Wi-Fi."
 echo "  7. Если бэкап Telegram был на обычной флешке — УДАЛИ его с неё (это полный доступ к телеге)."
+echo "     If the Telegram backup was on a normal flash drive — DELETE it there (it is full access)."
 echo ""
 ok "Технический лог (на всякий случай): $LOG"
 ok "Детальный лог всех команд (что и когда выполнялось): $DLOG"
