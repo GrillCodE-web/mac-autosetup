@@ -68,14 +68,14 @@ fi
 killall sharedfilelistd 2>/dev/null
 echo "      жду 15 секунд, пока macOS поднимет демона заново..."
 sleep 15
-if ! pgrep -x sharedfilelistd >/dev/null 2>&1; then
-    launchctl kickstart -k "gui/$(id -u)/com.apple.coreservices.sharedfilelistd" 2>/dev/null
-    sleep 5
-fi
+# launchctl kickstart здесь НЕ вызываем: на части macOS он блокируется
+# навсегда, если сервиса в этом домене нет. Демон стартует сам по требованию
+# (его держит launchd), пусто в процессах — НЕ ошибка. Верный признак
+# починки — отсутствие новых краш-репортов, он проверяется в шаге 5.
 if pgrep -x sharedfilelistd >/dev/null 2>&1; then
     ok "sharedfilelistd работает (списки «недавних» будут пустые — так и задумано)"
 else
-    bad "sharedfilelistd не поднялся — скопируй итог этого скрипта в чат"
+    ok "демона пока нет в процессах — стартует сам при первом обращении (это норма)"
 fi
 
 # ---------- 3. Петля VeraCrypt ----------
