@@ -30,6 +30,16 @@ info() { echo -e "  ${BLUE}${BOLD}•${NC}  $1"; }
 dim()  { echo -e "     ${GREY}$1${NC}"; }
 hr()   { echo -e "${GREY}   ────────────────────────────────────────────────────────${NC}"; }
 
+# Папка Telegram называется по-разному в разных сборках: префикс команды
+# (6N38VWS5BX. и др.) может отличаться. Поэтому везде ищем по хвосту имени.
+TG_GLOB="*keepcoder.Telegram"
+tg_local_dir() {
+    local d
+    d=$(find "$HOME/Library/Group Containers" -maxdepth 1 -name "$TG_GLOB" 2>/dev/null | head -1)
+    [ -z "$d" ] && d="$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram"
+    echo "$d"
+}
+
 # Двуязычный вывод: L "русский" "english" -> печатает СРАЗУ оба языка (дублирует)
 L() { printf '%s / %s' "$1" "$2"; }
 # Нормализация ответа да/нет на обоих языках -> всегда "да" или "нет"
@@ -837,10 +847,12 @@ vc_mounted_vol() {
     local v out
     out=$("$VC" --text --list 2>/dev/null | grep -o '/Volumes/.*' | head -1)
     if [ -n "$out" ] && [ -d "$out" ]; then echo "$out"; return 0; fi
-    # Запасной путь: том, на котором уже лежат данные приложений
+    # Запасной путь: том, на котором уже лежат данные приложений.
+    # Имя папки данных у каждого свое, поэтому ищем по самим данным.
     for v in $(list_candidate_vols); do
-        if [ -d "$v/DataAPP" ] || find "$v" -maxdepth 3 -type d \
-               \( -name "DataAPP" -o -name "6N38VWS5BX.ru.keepcoder.Telegram" -o -name "app.ls" -o -name "Tox" \) \
+        if find "$v" -maxdepth 5 -type d \
+               \( -iname "DataAPP" -o -iname "AppData" -o -name "$TG_GLOB" \
+                  -o -name "app.ls" -o -name "Tox" -o -name "MailMate" -o -iname "*tukan*" \) \
                -not -path "*/.Trashes/*" 2>/dev/null | grep -q .; then
             echo "$v"; return 0
         fi
@@ -853,17 +865,29 @@ vc_mounted_vol() {
     return 1
 }
 
-# Папка данных на диске: у каждого своя (DataAPP, Data, APPDATA...). Ищем что есть,
-# а если ничего нет — создаем DataAPP.
+# Папка данных на диске: у каждого называется по-своему (DataAPP, AppData, Данные,
+# или вообще никак — данные лежат прямо в корне). Порядок поиска:
+#   1) папка с подходящим именем;
+#   2) папка, в которой РЕАЛЬНО лежат данные приложений (имя любое);
+#   3) если ничего нет — создаем DataAPP (это первая настройка чистого диска).
 resolve_data_dir() {
-    local vol="$1" found
+    local vol="$1" found hit
     found=$(find "$vol" -maxdepth 3 -type d \( -iname "DataAPP" -o -iname "AppData" -o -iname "APPDATA" \) \
             -not -path "*/.Trashes/*" 2>/dev/null | head -1)
     if [ -z "$found" ]; then
-        found=$(find "$vol" -maxdepth 4 -type d -name "6N38VWS5BX.ru.keepcoder.Telegram" \
-                -not -path "*/.Trashes/*" 2>/dev/null | head -1)
-        [ -n "$found" ] && found=$(dirname "$found")
+        hit=$(find "$vol" -maxdepth 6 -type d \
+              \( -name "$TG_GLOB" -o -name "app.ls" -o -name "Tox" -o -name "MailMate" -o -iname "*tukan*" \) \
+              -not -path "*/.Trashes/*" -not -path "*/.Spotlight-V100/*" 2>/dev/null | head -1)
+        # Для Telegram структура «<папка данных>/Telegram/<контейнер>», для
+        # остальных — «<папка данных>/<имя>»: поднимаемся на нужный уровень.
+        if [ -n "$hit" ]; then
+            found=$(dirname "$hit")
+            case "$(basename "$found")" in
+                Telegram|telegram) found=$(dirname "$found") ;;
+            esac
+        fi
     fi
+    # Если данные лежат прямо в корне диска — папка данных и есть корень.
     if [ -z "$found" ]; then
         found="$vol/DataAPP"
         mkdir -p "$found" 2>/dev/null
@@ -1076,9 +1100,9 @@ else
     LINKED_SRC=""
 
     echo "$(L 'Ищу данные приложений по ВСЕМУ диску (включая подпапки) — переносить никуда не буду.' 'Scanning the whole disk (all subfolders) — nothing will be moved.')"
-    TG_SRC="$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable"
+    TG_SRC="$(tg_local_dir)/stable"
     if [ ! -d "$DATA/Telegram/stable" ]; then
-        TG_FOUND=$(deep_find "6N38VWS5BX.ru.keepcoder.Telegram")
+        TG_FOUND=$(deep_find "$TG_GLOB")
         if [ -n "$TG_FOUND" ] && [ -d "$TG_FOUND/stable" ]; then
             link_in_place "$TG_FOUND/stable" "$TG_SRC"
         else
@@ -1099,7 +1123,7 @@ else
 
     # --- 0) TELEGRAM С ФЛЕШКИ: доступа к номеру нет, сессия живет только в этих файлах ---
     TG_ON_DISK="$DATA/Telegram/stable"
-    TG_LOCAL="$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable"
+    TG_LOCAL="$(tg_local_dir)/stable"
     if [ ! -d "$TG_ON_DISK" ] && [ ! -d "$TG_LOCAL" ] && [ ! -L "$TG_LOCAL" ]; then
         echo ""
         warn "Данных Telegram нет ни в системе, ни на диске."
@@ -1109,9 +1133,9 @@ else
         if [ "$HAVE_BK" = "да" ]; then
             echo "Вставь флешку с бэкапом (секретный диск вытаскивать НЕ нужно)."
             pause
-            BK_SRC=$(find /Volumes -maxdepth 8 -type d -name "6N38VWS5BX.ru.keepcoder.Telegram" -not -path "*/.Trashes/*" 2>/dev/null | grep -v "^/Volumes/$VOL_NAME" | head -1)
+            BK_SRC=$(find /Volumes -type d -name "$TG_GLOB" -not -path "*/.Trashes/*" 2>/dev/null | grep -v "^/Volumes/$VOL_NAME" | head -1)
             if [ -z "$BK_SRC" ]; then
-                warn "Сам не нашел бэкап. Перетащи мышкой папку «6N38VWS5BX.ru.keepcoder.Telegram» в это окно и нажми Enter:"
+                warn "Сам не нашел бэкап. Перетащи мышкой папку Telegram (та, что заканчивается на «keepcoder.Telegram») в это окно и нажми Enter:"
                 read -r BK_IN
                 BK_SRC="${BK_IN% }"
                 BK_SRC="${BK_SRC//\\ / }"
@@ -1123,10 +1147,10 @@ else
                 if [ -d "$DATA/Telegram/stable" ]; then
                     ok "Telegram восстановлен на секретный диск. После настройки откроется уже вошедшим."
                 else
-                    err "Копирование не удалось. После настройки скопируй вручную в DataAPP/Telegram на диске."
+                    err "Копирование не удалось. После настройки скопируй вручную в $DATA/Telegram."
                 fi
             else
-                err "В папке $BK_SRC нет «stable» — это не тот бэкап. После настройки скопируй вручную в DataAPP/Telegram."
+                err "В папке $BK_SRC нет «stable» — это не тот бэкап. После настройки скопируй вручную в $DATA/Telegram."
             fi
         else
             warn "Бэкапа нет — Telegram будет ПУСТЫМ. Войти получится только с доступом к номеру телефона."
@@ -1139,8 +1163,12 @@ else
         [ -e "$item" ] || continue
         name=$(basename "$item")
         case "$name" in
-            Telegram)
-                src="$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable"
+            Telegram|telegram)
+                src="$(tg_local_dir)/stable"
+                [ -d "$item/stable" ] || continue
+                sub="$item/stable" ;;
+            *keepcoder.Telegram)
+                src="$(tg_local_dir)/stable"
                 [ -d "$item/stable" ] || continue
                 sub="$item/stable" ;;
             *)
@@ -1179,7 +1207,7 @@ else
         fi
     }
 
-    ensure_app "$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable" "Telegram/stable"
+    ensure_app "$(tg_local_dir)/stable" "Telegram/stable"
     ensure_app "$HOME/Library/Application Support/Sublime Text" "Sublime Text"
     ensure_app "$HOME/Library/Application Support/app.ls" "app.ls"
 

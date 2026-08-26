@@ -24,6 +24,15 @@ bad()  { echo -e "  ${RED}${BOLD}✖${NC}  $1"; FAIL=$((FAIL+1)); }
 dunno(){ echo -e "  ${YELLOW}${BOLD}?${NC}  $1"; UNKNOWN=$((UNKNOWN+1)); }
 dim()  { echo -e "     ${GREY}$1${NC}"; }
 
+# Папка Telegram: префикс команды (6N38VWS5BX. и др.) у разных сборок отличается
+TG_GLOB="*keepcoder.Telegram"
+tg_local_dir() {
+    local d
+    d=$(find "$HOME/Library/Group Containers" -maxdepth 1 -name "$TG_GLOB" 2>/dev/null | head -1)
+    [ -z "$d" ] && d="$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram"
+    echo "$d"
+}
+
 sect() {
     echo ""
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
@@ -152,14 +161,19 @@ sect "СЕКРЕТНЫЙ ДИСК И ДАННЫЕ / SECRET DISK & DATA"
 DATA_DIR=$(find /Volumes -maxdepth 3 -type d \( -iname "DataAPP" -o -iname "AppData" \) \
            -not -path "*/.Trashes/*" 2>/dev/null | head -1)
 if [ -z "$DATA_DIR" ]; then
-    DATA_DIR=$(find /Volumes -maxdepth 6 -type d \
-               \( -name "6N38VWS5BX.ru.keepcoder.Telegram" -o -name "app.ls" -o -name "Tox" -o -name "MailMate" \) \
-               -not -path "*/.Trashes/*" 2>/dev/null | head -1)
-    [ -n "$DATA_DIR" ] && DATA_DIR=$(dirname "$DATA_DIR")
+    HIT=$(find /Volumes -maxdepth 6 -type d \
+          \( -name "$TG_GLOB" -o -name "app.ls" -o -name "Tox" -o -name "MailMate" -o -iname "*tukan*" \) \
+          -not -path "*/.Trashes/*" 2>/dev/null | head -1)
+    if [ -n "$HIT" ]; then
+        DATA_DIR=$(dirname "$HIT")
+        case "$(basename "$DATA_DIR")" in
+            Telegram|telegram) DATA_DIR=$(dirname "$DATA_DIR") ;;
+        esac
+    fi
 fi
 # Последний вариант: том, на который реально смотрят наши симлинки
 if [ -z "$DATA_DIR" ]; then
-    for S in "$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable" \
+    for S in "$(tg_local_dir)/stable" \
              "$HOME/Library/Application Support/Sublime Text" \
              "$HOME/Library/Application Support/app.ls"; do
         if [ -L "$S" ]; then
@@ -210,7 +224,7 @@ check_link() {
     fi
 }
 
-check_link "$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable" "Telegram"
+check_link "$(tg_local_dir)/stable" "Telegram"
 check_link "$HOME/Library/Application Support/Sublime Text" "Sublime Text"
 check_link "$HOME/Library/Application Support/app.ls" "Sphere"
 [ -d "/Applications/MailMate.app" ] && check_link "$HOME/Library/Application Support/MailMate" "MailMate"
