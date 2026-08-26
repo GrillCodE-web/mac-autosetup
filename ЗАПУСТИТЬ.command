@@ -24,7 +24,7 @@ NC='\033[0m'
 # Маркер версии: если при запуске НЕ напечаталась строка «ВЕРСИЯ СКРИПТА» ниже —
 # ты запускаешь УСТАРЕВШУЮ копию (в старых та самая гонка, что вешала меню).
 # Проверка без запуска: grep -c SCRIPT_VERSION ЗАПУСТИТЬ.command  (0 = старая)
-readonly SCRIPT_VERSION="v5-2026.08.26 — умный корень данных (EncriptionData/DataAPP по реальным данным, а не по имени), Safari_Data/Tukan-контейнер, запрет стирания при пустой цели"
+readonly SCRIPT_VERSION="v6-2026.08.26 — опознание данных по СОДЕРЖИМОМУ (fp_app), а не по именам папок: работает при любых названиях на диске; схема «Имя_Data/Приложение» и Telegram/stable; legacy_target удалён"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -1590,12 +1590,37 @@ else
     # и НЕ спрашиваем про него — сразу отчитываемся и пропускаем.
     already_linked() {
         [ -L "$1" ] || return 1
-        ok "$2 — $(L 'уже подключен симлинком, пропускаю.' 'already linked with a symlink, skipping.')"
-        return 0
+        # Симлинк, ведущий в ПУСТУЮ или несуществующую папку, — МЁРТВЫЙ
+        # (Safari так висел на пустой заглушке DataAPP/Safari месяцами).
+        # Убираем его и работаем дальше, как будто симлинка не было.
+        local tgt
+        tgt=$(readlink "$1")
+        if [ -d "$tgt" ] && [ -n "$(ls -A "$tgt" 2>/dev/null)" ]; then
+            ok "$2 — $(L 'уже подключен симлинком, пропускаю.' 'already linked with a symlink, skipping.')"
+            return 0
+        fi
+        dim "$2 — $(L 'старый симлинк вел в пустую папку, убираю и перекидываю на живые данные.' 'old symlink pointed at an empty folder: removing it and relinking to live data.')"
+        rm -f "$1"
+        return 1
     }
     # директория существует И НЕ ПУСТАЯ — пустышки от старых прогонов данными
     # не считаются и не должны глушить поиск по всему диску
     data_ready() { [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]; }
+    # link_from <src> <label> <кандидаты-цели на диске...>:
+    # перелинковывает на ПЕРВУЮ живую цель по КАНОНИЧЕСКОМУ имени.
+    # Старые варианты *_Data больше НЕ перечисляем: как ни названа папка,
+    # её подберет ниже цикл с отпечатками fp_app (по содержимому)
+    link_from() {
+        local src="$1" label="$2" cand; shift 2
+        already_linked "$src" "$label" && return 0
+        for cand in "$@"; do
+            if data_ready "$cand"; then
+                link_to "$src" "$cand"
+                return $?
+            fi
+        done
+        return 1
+    }
     echo "$(L 'Ищу данные приложений по ВСЕМУ диску (включая подпапки) — переносить никуда не буду.' 'Scanning the whole disk (all subfolders) — nothing will be moved.')"
     # Чистка после старой версии скрипта: Safari по ошибке линковался в
     # Application Support/Safari (лишний симлинк не туда) — убираю, если есть.
@@ -1606,25 +1631,26 @@ else
     TG_SRC="$(tg_local_dir)/stable"
     if already_linked "$TG_SRC" "Telegram"; then
         :
-    elif ! data_ready "$DATA/Telegram/stable"; then
+    elif ! link_from "$TG_SRC" "Telegram" "$DATA/Telegram/stable"; then
         TG_FOUND=$(deep_find "$TG_GLOB")
         if [ -n "$TG_FOUND" ] && [ -d "$TG_FOUND/stable" ]; then
             link_in_place "$TG_FOUND/stable" "$TG_SRC"
         else
             TG_FOUND=$(deep_find "stable")
-            if [ -n "$TG_FOUND" ] && [ -e "$TG_FOUND/accounts-metadata" ]; then
-                link_in_place "$TG_FOUND" "$TG_SRC"
-            fi
+            [ -n "$TG_FOUND" ] && [ -e "$TG_FOUND/accounts-metadata" ] && link_in_place "$TG_FOUND" "$TG_SRC"
         fi
     fi
-    already_linked "$HOME/Library/Application Support/Sublime Text" "Sublime Text" || { ! data_ready "$DATA/Sublime Text" && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }; }
-    # Safari_ или Safari_: ищем по маске Safari* — на старых дисках папка
-    # называется Safari_Data (точное имя «Safari» её пропускало → линковалась
-    # пустышка DataAPP/Safari при живых закладках в Safari_Data)
-    already_linked "$HOME/Library/Safari" "Safari" || { ! data_ready "$DATA/Safari_Data" && ! data_ready "$DATA/Safari" && { SF_FOUND=$(deep_find "Safari*"); [ -n "$SF_FOUND" ] && { osascript -e 'quit app "Safari"' 2>/dev/null; sleep 1; link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }; }; }
-    already_linked "$HOME/Library/Application Support/app.ls" "Linken Sphere" || { ! data_ready "$DATA/app.ls" && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }; }
-    already_linked "$HOME/Library/Application Support/MailMate" "MailMate" || { ! data_ready "$DATA/MailMate" && ! data_ready "$DATA/MailMate_Data" && { MM_FOUND=$(deep_find "MailMate"); [ -n "$MM_FOUND" ] && link_in_place "$MM_FOUND" "$HOME/Library/Application Support/MailMate"; }; }
-    already_linked "$HOME/Library/Application Support/Tox" "Tox (qTox)" || { ! data_ready "$DATA/Tox" && { TOX_FOUND=$(deep_find "Tox"); [ -n "$TOX_FOUND" ] && link_in_place "$TOX_FOUND" "$HOME/Library/Application Support/Tox"; }; }
+    link_from "$HOME/Library/Application Support/Sublime Text" "Sublime Text" "$DATA/Sublime Text" \
+        || { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }
+    osascript -e 'quit app "Safari"' 2>/dev/null; sleep 1
+    link_from "$HOME/Library/Safari" "Safari" "$DATA/Safari" \
+        || { SF_FOUND=$(deep_find "Safari*"); [ -n "$SF_FOUND" ] && link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }
+    link_from "$HOME/Library/Application Support/app.ls" "Linken Sphere" "$DATA/app.ls" \
+        || { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }
+    link_from "$HOME/Library/Application Support/MailMate" "MailMate" "$DATA/MailMate" \
+        || { MM_FOUND=$(deep_find "MailMate"); [ -n "$MM_FOUND" ] && link_in_place "$MM_FOUND" "$HOME/Library/Application Support/MailMate"; }
+    link_from "$HOME/Library/Application Support/Tox" "Tox (qTox)" "$DATA/Tox" \
+        || { TOX_FOUND=$(deep_find "Tox"); [ -n "$TOX_FOUND" ] && link_in_place "$TOX_FOUND" "$HOME/Library/Application Support/Tox"; }
     # Tukan — sandbox-приложение: его данные живут в КОНТЕЙНЕРЕ
     # ~/Library/Containers/me.tukan.tukan, а НЕ в Application Support.
     # Старые версии скрипта линковали Application Support → туда Tukan не
@@ -1677,41 +1703,86 @@ else
         fi
     fi
 
-    # --- 1) ВОССТАНОВЛЕНИЕ: сканируем диск и предлагаем подключить найденное ---
+    # --- 1) ВОССТАНОВЛЕНИЕ: сканируем диск и подключаем найденное ---
+    # Уборка мусора от старой версии этого цикла: симлинки вида
+    # Application Support/<Имя>_Data — приложения туда НЕ смотрят.
+    for junk in "$HOME/Library/Application Support/"*_Data; do
+        if [ -L "$junk" ]; then
+            rm -f "$junk" 2>/dev/null && dim "$(L 'Убрал мусорный симлинк' 'Removed a junk symlink') $(basename "$junk") $(L '(приложения туда не смотрят).' '(apps never look there).')"
+        fi
+    done
+    # ОПОЗНАНИЕ ПО СОДЕРЖИМОМУ (имена папок у всех свои — смотрим в файлы).
+    # Возвращает ключ приложения или пусто. Понятно ЛЮБОМУ пользователю
+    # скрипта, независимо от того, как у него названы папки на диске.
+    fp_app() {
+        local d="$1" f
+        [ -d "$d" ] || return 0
+        # Telegram: контейнер с accounts-metadata (или родитель «stable»)
+        if [ -e "$d/accounts-metadata" ]; then echo "telegram"; return 0; fi
+        if [ -d "$d/stable" ] && [ -e "$d/stable/accounts-metadata" ]; then echo "telegram"; return 0; fi
+        # Safari: его фирменные файлы профиля
+        for f in "Bookmarks.plist" "History.db" "TopSites.plist" "PerSitePreferences.plist" "TouchIcons.plist"; do
+            if [ -e "$d/$f" ]; then echo "safari"; return 0; fi
+        done
+        # Sublime Text: обязательная пара папок
+        if [ -d "$d/Local" ] && [ -d "$d/Packages" ]; then echo "sublime"; return 0; fi
+        # qTox: профиль *.tox прямо в папке
+        if find "$d" -maxdepth 1 -name "*.tox" 2>/dev/null | grep -q .; then echo "tox"; return 0; fi
+        # MailMate: хранилище писем «Messages»
+        if [ -d "$d/Messages" ]; then echo "mailmate"; return 0; fi
+        # Контейнер sandbox-приложения: метаданные с id бандла
+        if [ -e "$d/.com.apple.containermanagerd.metadata.plist" ]; then
+            if grep -qa "me.tukan.tukan" "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; then
+                echo "tukan"; return 0
+            fi
+            return 0
+        fi
+        # Linken Sphere: имя папки фиксировано самим приложением
+        if [ "$(basename "$d")" = "app.ls" ]; then echo "sphere"; return 0; fi
+        return 0
+    }
+    # Ключ приложения -> его РЕАЛЬНЫЙ путь в системе (это знает приложение,
+    # не пользователь — тут hardcoded быть и должно)
+    app_target() {
+        case "$1" in
+            telegram) echo "$(tg_local_dir)/stable" ;;
+            safari)   echo "$HOME/Library/Safari" ;;
+            sublime)  echo "$HOME/Library/Application Support/Sublime Text" ;;
+            tox)      echo "$HOME/Library/Application Support/Tox" ;;
+            mailmate) echo "$HOME/Library/Application Support/MailMate" ;;
+            tukan)    echo "$HOME/Library/Containers/me.tukan.tukan" ;;
+            sphere)   echo "$HOME/Library/Application Support/app.ls" ;;
+        esac
+    }
     FOUND=0
     for item in "$DATA"/*; do
-        [ -e "$item" ] || continue
+        [ -d "$item" ] || continue
         name=$(basename "$item")
-        case "$name" in
-            Telegram|telegram)
-                src="$(tg_local_dir)/stable"
-                [ -d "$item/stable" ] || continue
-                sub="$item/stable" ;;
-            *keepcoder.Telegram)
-                src="$(tg_local_dir)/stable"
-                [ -d "$item/stable" ] || continue
-                sub="$item/stable" ;;
-            Safari)
-                # Данные Safari лежат в ~/Library/Safari, а НЕ в Application
-                # Support — раньше линковались не туда.
-                src="$HOME/Library/Safari"
-                sub="$item" ;;
-            *)
-                src="$HOME/Library/Application Support/$name"
-                sub="$item" ;;
-        esac
-        if [ -L "$src" ]; then
-            ok "«$name» — уже подключен симлинком, пропускаю."
-            FOUND=1
+        sub="$item"
+        key=$(fp_app "$sub")
+        # Схема «Имя_Data/Приложение» (например MailMate_Data/MailMate):
+        # настоящие данные лежат на уровень глубже — проверяю вложенные папки
+        if [ -z "$key" ]; then
+            for inner in "$item"/*/; do
+                [ -d "$inner" ] || continue
+                k=$(fp_app "${inner%/}")
+                if [ -n "$k" ]; then key="$k"; sub="${inner%/}"; break; fi
+            done
+        fi
+        if [ -z "$key" ]; then
+            dim "$(L "Папка «$name»" "Folder \"$name\"") — $(L 'не понял по содержимому, какому приложению она принадлежит (данные на диске не тронуты).' 'could not tell from its contents which app it belongs to (data on the disk is untouched).')"
             continue
         fi
-        echo "Нашел на диске: «$name»"
-        if [ "$AUTO_LINK" = "да" ]; then
-            dim "$(L 'Подключаю автоматически (выбрано в начале).' 'Linking automatically (chosen at the start).')"
-        else
-            read -r -p "   Подключить к системе? (да/нет) [да]: " L
-            L=$(yn "${L:-да}")
-            [ "$L" != "да" ] && continue
+        # Telegram все данные держит в подпапке «stable» — линковать нужно её
+        [ "$key" = "telegram" ] && [ -d "$sub/stable" ] && sub="$sub/stable"
+        src=$(app_target "$key")
+        [ -z "$src" ] && continue
+        already_linked "$src" "$name" && { FOUND=1; continue; }
+        echo "$(L "Нашел на диске: «$name»" "Found on the disk: \"$name\"")"
+        if [ "$AUTO_LINK" != "да" ]; then
+            read -r -p "   $(L 'Подключить к системе? (да/нет) [да]' 'Link it into the system? (yes/no) [yes]'): " ANS
+            ANS=$(yn "${ANS:-да}")
+            [ "$ANS" != "да" ] && continue
         fi
         FOUND=1
         link_to "$src" "$sub"
