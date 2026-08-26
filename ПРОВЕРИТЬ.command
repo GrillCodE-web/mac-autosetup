@@ -139,7 +139,7 @@ fi
 if echo "$ADMIN_PASS" | sudo -S "$FW" --getstealthmode 2>/dev/null | grep -qi "enabled"; then
     good "Режим невидимости (stealth) включен."
 else
-    bad "Режим невидимости выключен."
+    bad "Режим невидимости ВЫКЛЮЧЕН! Настройки -> Сеть -> Брандмауэр -> Параметры -> «Включить режим невидимости»."
 fi
 
 # --- 3. Wi-Fi ---

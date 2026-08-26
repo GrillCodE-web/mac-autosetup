@@ -645,11 +645,49 @@ ok "Экран входа: подсказки, сообщение и кнопк�
 # Брандмауэр: вкл + stealth. БЕЗ --setblockall: режим «блокировать все
 # входящие» ломает FUSE-T (он монтирует диски через локальный NFS/SMB на
 # 127.0.0.1) — VeraCrypt тогда вечно висит на «пожалуйста подождите».
+# На macOS 15 (Sequoia) socketfilterfw умеет ответить «managed only by MDM»
+# и НЕ включить ничего, а старый скрипт все равно печатал ✓. Поэтому состояние
+# ПЕРЕЧИТЫВАЕТСЯ после установки; если macOS не дала — пробую запасной ключ,
+# потом открываю Настройки и жду тумблер руками (как с Bluetooth).
 FW="/usr/libexec/ApplicationFirewall/socketfilterfw"
-as_root "$FW" --setglobalstate on &>/dev/null
-as_root "$FW" --setblockall off &>/dev/null
-as_root "$FW" --setstealthmode on &>/dev/null
-ok "Брандмауэр: включен + режим невидимости (блок ВСЕХ входящих выключен — он ломает VeraCrypt/FUSE-T)."
+fw_global_on()  { as_root "$FW" --getglobalstate 2>/dev/null | grep -qi "enabled"; }
+fw_stealth_on() { as_root "$FW" --getstealthmode 2>/dev/null | grep -qi "enabled"; }
+as_root "$FW" --setglobalstate on >/dev/null 2>&1
+as_root "$FW" --setblockall off >/dev/null 2>&1
+as_root "$FW" --setstealthmode on >/dev/null 2>&1
+if ! fw_global_on; then
+    # запасной способ: старый ключ, который Sequoia иногда всё же уважает
+    as_root defaults write /Library/Preferences/com.apple.alf globalstate -int 1 2>/dev/null
+    sleep 2
+fi
+if fw_global_on && ! fw_stealth_on; then
+    as_root "$FW" --setstealthmode on >/dev/null 2>&1
+    sleep 1
+fi
+if fw_global_on && fw_stealth_on; then
+    ok "$(L 'Брандмауэр: включен + режим невидимости (проверил, перечитав состояние).' 'Firewall: on + stealth mode (verified by re-reading the state).')"
+    dim "$(L 'Блок ВСЕХ входящих выключен — он ломает VeraCrypt/FUSE-T.' 'Block-all incoming is off — it breaks VeraCrypt/FUSE-T.')"
+else
+    warn "$(L 'macOS не дала включить брандмауэр/невидимость из терминала (так на Sequoia).' 'macOS refused to enable the firewall/stealth from the terminal (Sequoia does this).')"
+    info "$(L 'Открываю Настройки -> Сеть -> Брандмауэр — включи тумблер, затем Параметры -> «Включить режим невидимости». Я подожду и проверю сам.' 'Opening Settings -> Network -> Firewall — flip it on, then Options -> «Enable stealth mode». I will wait and verify.')"
+    open "x-apple.systempreferences:com.apple.Network-Settings" 2>/dev/null \
+        || open "x-apple.systempreferences:com.apple.preference.network" 2>/dev/null \
+        || open -b com.apple.systempreferences 2>/dev/null
+    FW_WAIT=0
+    SPIN_N=0
+    while { ! fw_global_on || ! fw_stealth_on; } && [ $FW_WAIT -lt 60 ]; do
+        sleep 3
+        FW_WAIT=$((FW_WAIT + 1))
+        spin "$(L 'жду брандмауэр и режим невидимости' 'waiting for the firewall and stealth mode') — $((FW_WAIT * 3)) $(L 'сек' 'sec')"
+    done
+    spin_end
+    if fw_global_on && fw_stealth_on; then
+        ok "$(L 'Брандмауэр + режим невидимости включены — подтверждаю перечитыванием.' 'Firewall + stealth mode enabled — confirmed by re-reading.')"
+    else
+        err "$(L 'Брандмауэр/невидимость так и не включились — добавил в список доделок.' 'Firewall/stealth still not enabled — added to the manual list.')"
+        FW_MANUAL=1
+    fi
+fi
 
 # Общий экран / Удалённое управление (ARD) / Удалённый вход (SSH) — глушим.
 # Это прямые каналы удалённого доступа к Mac.
@@ -1967,6 +2005,8 @@ dim "Второй пароль стирает всё при вводе — ни�
       "Tukan: launch it once, then run this script again so I can link its data."
 [ "$BT_MANUAL" = "1" ] && mitem "Настройки -> Bluetooth -> выключи (я не смог из терминала)." \
       "Settings -> Bluetooth -> turn it off (I could not from the terminal)."
+[ "$FW_MANUAL" = "1" ] && mitem "Настройки -> Сеть -> Брандмауэр: тумблер ВКЛ, затем Параметры -> «Включить режим невидимости»." \
+      "Settings -> Network -> Firewall: toggle ON, then Options -> «Enable stealth mode»."
 [ "$SL_MANUAL" = "1" ] && mitem "Настройки -> Экран блокировки -> «Запрашивать пароль после заставки» = СРАЗУ." \
       "Settings -> Lock Screen -> «Require password after screen saver begins» = IMMEDIATELY."
 [ "$KB_LAYOUT_MANUAL" = "1" ] && mitem "Настройки -> Клавиатура -> Источники ввода -> + -> Русская." \
