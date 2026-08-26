@@ -650,43 +650,78 @@ ok "Экран входа: подсказки, сообщение и кнопк�
 # ПЕРЕЧИТЫВАЕТСЯ после установки; если macOS не дала — пробую запасной ключ,
 # потом открываю Настройки и жду тумблер руками (как с Bluetooth).
 FW="/usr/libexec/ApplicationFirewall/socketfilterfw"
-fw_global_on()  { as_root "$FW" --getglobalstate 2>/dev/null | grep -qi "enabled"; }
-fw_stealth_on() { as_root "$FW" --getstealthmode 2>/dev/null | grep -qi "enabled"; }
+# состояния: on / off / unknown. Sequoia/Tahoe может ответить «managed only by
+# MDM» или пустотой вместо «enabled/disabled» — это НЕ «выключен», это «не смог
+# прочитать». Раньше такой ответ считался «выключен», и скрипт зря ждал тумблер
+# по 3 минуты, хотя в Настройках всё уже было включено.
+fw_sig() {
+    local out
+    out=$("$FW" "$1" 2>/dev/null)
+    case "$out" in *"enabled"*|*"State = 1"*) echo "on" ;;
+                   *"disabled"*|*"State = 0"*) echo "off" ;;
+                   *) echo "unknown" ;; esac
+}
+# по чтению sudo не нужен; но если без него пусто — пробую с ним
+fw_probe() { local s; s=$(fw_sig "$1"); [ "$s" = "unknown" ] && s=$(as_root "$FW" "$1" 2>/dev/null | awk 'tolower($0) ~ /enabled/ {print "on"; exit} tolower($0) ~ /disabled/ {print "off"; exit}'); echo "${s:-unknown}"; }
+fw_global()  { fw_probe --getglobalstate; }
+fw_stealth() { fw_probe --getstealthmode; }
+if [ "$(fw_global)" = "on" ] && [ "$(fw_stealth)" = "on" ]; then
+    # уже включено и до этого ничего не трогаем
+    ok "$(L 'Брандмауэр: уже включен + режим невидимости (проверил ДО любых изменений).' 'Firewall: already on + stealth mode (checked BEFORE changing anything).')"
+    dim "$(L 'Блок ВСЕХ входящих выключен — он ломает VeraCrypt/FUSE-T.' 'Block-all incoming is off — it breaks VeraCrypt/FUSE-T.')"
+else
 as_root "$FW" --setglobalstate on >/dev/null 2>&1
 as_root "$FW" --setblockall off >/dev/null 2>&1
 as_root "$FW" --setstealthmode on >/dev/null 2>&1
-if ! fw_global_on; then
+if [ "$(fw_global)" != "on" ]; then
     # запасной способ: старый ключ, который Sequoia иногда всё же уважает
     as_root defaults write /Library/Preferences/com.apple.alf globalstate -int 1 2>/dev/null
     sleep 2
 fi
-if fw_global_on && ! fw_stealth_on; then
+if [ "$(fw_global)" = "on" ] && [ "$(fw_stealth)" != "on" ]; then
     as_root "$FW" --setstealthmode on >/dev/null 2>&1
     sleep 1
 fi
-if fw_global_on && fw_stealth_on; then
+FW_G=$(fw_global); FW_S=$(fw_stealth)
+if [ "$FW_G" = "on" ] && [ "$FW_S" = "on" ]; then
     ok "$(L 'Брандмауэр: включен + режим невидимости (проверил, перечитав состояние).' 'Firewall: on + stealth mode (verified by re-reading the state).')"
     dim "$(L 'Блок ВСЕХ входящих выключен — он ломает VeraCrypt/FUSE-T.' 'Block-all incoming is off — it breaks VeraCrypt/FUSE-T.')"
+elif [ "$FW_G" = "unknown" ] || [ "$FW_S" = "unknown" ]; then
+    # терминал НЕ МОЖЕТ прочитать состояние (MDM-ответ/пусто): ждать тумблер
+    # бессмысленно — проверка никогда не сработает. Спрашиваю у человека.
+    warn "$(L 'macOS не дает прочитать состояние брандмауэра из терминала.' 'macOS will not let the terminal read the firewall state.')"
+    echo ""
+    read -r -p "   $(L 'Открой Настройки -> Сеть -> Брандмауэр: тумблер включен И в «Параметры» стоит «Включить режим невидимости»? (да/нет)' 'Open Settings -> Network -> Firewall: is the toggle ON and «Enable stealth mode» ON in Options? (yes/no)'): " FW_EYES
+    if [ "$(yn "${FW_EYES:-да}")" = "да" ]; then
+        ok "$(L 'Брандмауэр + режим невидимости: подтверждаешь глазами в Настройках — принято.' 'Firewall + stealth: confirmed by your eyes in Settings — accepted.')"
+    else
+        info "$(L 'Открываю Настройки -> Сеть -> Брандмауэр — включи тумблер, затем Параметры -> «Включить режим невидимости».' 'Opening Settings -> Network -> Firewall — flip it on, then Options -> «Enable stealth mode».')"
+        open "x-apple.systempreferences:com.apple.Network-Settings" 2>/dev/null \
+            || open "x-apple.systempreferences:com.apple.preference.network" 2>/dev/null \
+            || open -b com.apple.systempreferences 2>/dev/null
+        err "$(L 'Брандмауэр/невидимость выключены — добавил в список доделок.' 'Firewall/stealth are off — added to the manual list.')"
+        FW_MANUAL=1
+    fi
 else
-    warn "$(L 'macOS не дала включить брандмауэр/невидимость из терминала (так на Sequoia).' 'macOS refused to enable the firewall/stealth from the terminal (Sequoia does this).')"
     info "$(L 'Открываю Настройки -> Сеть -> Брандмауэр — включи тумблер, затем Параметры -> «Включить режим невидимости». Я подожду и проверю сам.' 'Opening Settings -> Network -> Firewall — flip it on, then Options -> «Enable stealth mode». I will wait and verify.')"
     open "x-apple.systempreferences:com.apple.Network-Settings" 2>/dev/null \
         || open "x-apple.systempreferences:com.apple.preference.network" 2>/dev/null \
         || open -b com.apple.systempreferences 2>/dev/null
     FW_WAIT=0
     SPIN_N=0
-    while { ! fw_global_on || ! fw_stealth_on; } && [ $FW_WAIT -lt 60 ]; do
+    while { [ "$(fw_global)" != "on" ] || [ "$(fw_stealth)" != "on" ]; } && [ $FW_WAIT -lt 60 ]; do
         sleep 3
         FW_WAIT=$((FW_WAIT + 1))
         spin "$(L 'жду брандмауэр и режим невидимости' 'waiting for the firewall and stealth mode') — $((FW_WAIT * 3)) $(L 'сек' 'sec')"
     done
     spin_end
-    if fw_global_on && fw_stealth_on; then
+    if [ "$(fw_global)" = "on" ] && [ "$(fw_stealth)" = "on" ]; then
         ok "$(L 'Брандмауэр + режим невидимости включены — подтверждаю перечитыванием.' 'Firewall + stealth mode enabled — confirmed by re-reading.')"
     else
         err "$(L 'Брандмауэр/невидимость так и не включились — добавил в список доделок.' 'Firewall/stealth still not enabled — added to the manual list.')"
         FW_MANUAL=1
     fi
+fi
 fi
 
 # Общий экран / Удалённое управление (ARD) / Удалённый вход (SSH) — глушим.
@@ -1839,26 +1874,50 @@ else
             return 1
         fi
         if [ "$src_cnt" -gt 0 ]; then
-            mkdir -p "$dst"
-            cp -Rp "$src/." "$dst/" 2>/dev/null
-            local rc=$?
-            local dst_cnt
-            dst_cnt=$(find "$dst" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
-            if [ $rc -ne 0 ] || [ -z "$dst_cnt" ] || [ "$dst_cnt" -lt "$src_cnt" ]; then
-                err "$label — $(L 'перенос не удался, оригиналы ОСТАЛИСЬ в системе.' 'move failed, originals are KEPT in the system.')"
-                dim "$(L 'Либо дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), либо на диске кончилось место. Перезапусти Терминал и запусти скрипт еще раз.' 'Either grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), or the disk is out of space. Restart Terminal and run the script again.')"
-                return 1
+            local dst_cnt=0
+            [ -d "$dst" ] && dst_cnt=$(find "$dst" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$dst_cnt" -lt "$src_cnt" ]; then
+                mkdir -p "$dst"
+                cp -Rp "$src/." "$dst/" 2>/dev/null
+                local rc=$?
+                dst_cnt=$(find "$dst" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+                if [ $rc -ne 0 ] || [ -z "$dst_cnt" ] || [ "$dst_cnt" -lt "$src_cnt" ]; then
+                    err "$label — $(L 'перенос не удался, оригиналы ОСТАЛИСЬ в системе.' 'move failed, originals are KEPT in the system.')"
+                    dim "$(L 'Либо дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), либо на диске кончилось место. Перезапусти Терминал и запусти скрипт еще раз.' 'Either grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), or the disk is out of space. Restart Terminal and run the script again.')"
+                    return 1
+                fi
             fi
         fi
         mkdir -p "$dst" 2>/dev/null
-        rm -rf "$src" 2>/dev/null
-        ln -s "$dst" "$src" 2>/dev/null || { sleep 1; rm -rf "$src" 2>/dev/null; ln -s "$dst" "$src" 2>/dev/null; }
-        if [ -L "$src" ]; then
+        # ЗАМЕНА ПАПКИ СИМЛИНКОМ. Раньше было rm -rf + ln -s, и между rm и ln
+        # Finder/iCloud успевали пересоздать папку: ln падал («File exists»),
+        # и скрипт после УДАЧНОГО переноса писал «симлинк НЕ создан», а папка
+        # оставалась в системе. Теперь: гасим Finder, ПЕРЕИМЕНОВЫВАЕМ папку в
+        # сторону, ставим симлинк, запускаем Finder. Оригинал стираю только
+        # ПОСЛЕ удачного симлинка; если не стерся — скажу имя оставшейся папки.
+        osascript -e 'quit app "Finder"' 2>/dev/null
+        sleep 1
+        local old="$src.autosetup-old" swapped=0
+        rm -rf "$old" 2>/dev/null
+        if mv "$src" "$old" 2>/dev/null; then
+            if ln -s "$dst" "$src" 2>/dev/null; then
+                swapped=1
+            else
+                # папку кто-то успел пересоздать — убираю пустышку и возвращаю оригинал
+                rm -rf "$src" 2>/dev/null
+                mv "$old" "$src" 2>/dev/null
+            fi
+        fi
+        open -a Finder 2>/dev/null
+        if [ "$swapped" = "1" ]; then
             if [ "$src_cnt" -gt 0 ]; then
                 ok "$label — $(L 'перенесено объектов:' 'items moved:') $src_cnt → $(L 'на секретный диск, в системе остался симлинк.' 'to the secret disk, a symlink left in the system.')"
             else
                 ok "$label — $(L 'папка была пуста, подключена с диска симлинком.' 'folder was empty, linked from the disk with a symlink.')"
             fi
+            rm -rf "$old" 2>/dev/null
+            [ -e "$old" ] && warn "$label — $(L 'оригинал не стерся: в ~ осталась папка' 'original did not wipe: the folder left in ~') «$(basename "$old")» — $(L 'удали её руками (данные уже на диске).' 'delete it by hand (data is already on the disk).')"
+            return 0
         else
             err "$label — $(L 'симлинк НЕ создан (папка осталась в системе).' 'symlink NOT created (folder left in the system).')"
             return 1
@@ -1873,14 +1932,24 @@ else
         DO_UF=$(yn "${UF:-да}")
     fi
     if [ "$DO_UF" = "да" ]; then
-        dim "$(L 'macOS может спросить «Терминалу нужен доступ к папке...» — нажми «Разрешить».' 'macOS may ask “Terminal would like to access files in...” — click “Allow”.')"
-        ensure_user_dir "$HOME/Desktop"   "Desktop"   "$(L 'Рабочий стол' 'Desktop')"
-        ensure_user_dir "$HOME/Documents" "Documents" "$(L 'Документы' 'Documents')"
-        # Установщики из ~/Downloads/autosetup уже отработали — их сотни мегабайт
-        # незачем катать на шифрованный диск (в конце они все равно стираются).
-        [ -d "$DL" ] && rm -rf "$DL" 2>/dev/null
-        ensure_user_dir "$HOME/Downloads" "Downloads" "$(L 'Загрузки' 'Downloads')"
-        dim "$(L 'Всё, что теперь сохраняешь в эти папки, сразу попадает на диск. Без диска они пустые — так и задумано.' 'Everything saved into these folders now goes straight to the disk. Without the disk they are empty — by design.')"
+        # iCloud-синхронизация «Рабочий стол и папки Документов» (FileProvider)
+        # сама пересоздает эти папки и тянет их содержимое в облако — симлинки
+        # будут срываться, а Finder после подмены папок может упасть. Отключена?
+        if [ "$(defaults read com.apple.finder FXICloudDriveDesktop 2>/dev/null)" = "1" ] \
+            || [ "$(defaults read com.apple.finder FXICloudDriveDocuments 2>/dev/null)" = "1" ]; then
+            err "$(L 'iCloud синхронизирует Рабочий стол/Документы — папки на диск НЕ подключаю.' 'iCloud syncs Desktop/Documents — NOT linking these folders to the disk.')"
+            dim "$(L 'Сначала выключи: Настройки -> [твоё имя] -> iCloud -> Диск iCloud -> синхронизацию «Рабочий стол и папки Документов». Потом запусти скрипт еще раз.' 'First turn it off: Settings -> [your name] -> iCloud -> iCloud Drive -> «Desktop & Documents Folders» sync. Then re-run the script.')"
+            UF_ICLOUD=1
+        else
+            dim "$(L 'macOS может спросить «Терминалу нужен доступ к папке...» — нажми «Разрешить».' 'macOS may ask "Terminal would like to access files in..." — click "Allow".')"
+            ensure_user_dir "$HOME/Desktop"   "Desktop"   "$(L 'Рабочий стол' 'Desktop')"
+            ensure_user_dir "$HOME/Documents" "Documents" "$(L 'Документы' 'Documents')"
+            # Установщики из ~/Downloads/autosetup уже отработали — их сотни мегабайт
+            # незачем катать на шифрованный диск (в конце они все равно стираются).
+            [ -d "$DL" ] && rm -rf "$DL" 2>/dev/null
+            ensure_user_dir "$HOME/Downloads" "Downloads" "$(L 'Загрузки' 'Downloads')"
+            dim "$(L 'Всё, что теперь сохраняешь в эти папки, сразу попадает на диск. Без диска они пустые — так и задумано.' 'Everything saved into these folders now goes straight to the disk. Without the disk they are empty — by design.')"
+        fi
     else
         warn "$(L 'Пользовательские папки остались в системе — файлы в них видны и без диска, ПРОВЕРИТЬ будет ругаться.' 'User folders stayed in the system — files in them are visible without the disk, ПРОВЕРИТЬ will complain.')"
     fi
@@ -2007,6 +2076,8 @@ dim "Второй пароль стирает всё при вводе — ни�
       "Settings -> Bluetooth -> turn it off (I could not from the terminal)."
 [ "$FW_MANUAL" = "1" ] && mitem "Настройки -> Сеть -> Брандмауэр: тумблер ВКЛ, затем Параметры -> «Включить режим невидимости»." \
       "Settings -> Network -> Firewall: toggle ON, then Options -> «Enable stealth mode»."
+[ "$UF_ICLOUD" = "1" ] && mitem "Выключи iCloud-синхронизацию «Рабочий стол и папки Документов» (Настройки -> [твоё имя] -> iCloud -> Диск iCloud), затем запусти скрипт еще раз — он подключит эти папки к диску." \
+      "Turn off iCloud «Desktop & Documents Folders» sync (Settings -> [your name] -> iCloud -> iCloud Drive), then re-run the script — it will link those folders to the disk."
 [ "$SL_MANUAL" = "1" ] && mitem "Настройки -> Экран блокировки -> «Запрашивать пароль после заставки» = СРАЗУ." \
       "Settings -> Lock Screen -> «Require password after screen saver begins» = IMMEDIATELY."
 [ "$KB_LAYOUT_MANUAL" = "1" ] && mitem "Настройки -> Клавиатура -> Источники ввода -> + -> Русская." \

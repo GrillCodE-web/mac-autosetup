@@ -124,23 +124,33 @@ fi
 sect "СЕТЬ И РАДИО / NETWORK & RADIO"
 
 # --- 2. Брандмауэр ---
+# socketfilterfw на Sequoia/Tahoe может ответить «managed only by MDM» или
+# пустотой. Пустой/странный ответ — это «не смог прочитать» (жёлтый ?), а НЕ
+# «выключен»: в Настройках при этом всё может быть включено.
 FW="/usr/libexec/ApplicationFirewall/socketfilterfw"
-FWSTATE=$(echo "$ADMIN_PASS" | sudo -S "$FW" --getglobalstate 2>/dev/null)
-if echo "$FWSTATE" | grep -qi "enabled"; then
-    good "Брандмауэр включен."
-else
-    bad "Брандмауэр ВЫКЛЮЧЕН! Настройки -> Сеть -> Брандмауэр."
-fi
-if echo "$ADMIN_PASS" | sudo -S "$FW" --getblockall 2>/dev/null | grep -qi "enabled"; then
-    dunno "Блокировка ВСЕХ входящих включена — с ней VeraCrypt/FUSE-T может виснуть на монтировании."
-else
-    good "Блокировка всех входящих выключена — так и задумано (иначе ломается VeraCrypt/FUSE-T)."
-fi
-if echo "$ADMIN_PASS" | sudo -S "$FW" --getstealthmode 2>/dev/null | grep -qi "enabled"; then
-    good "Режим невидимости (stealth) включен."
-else
-    bad "Режим невидимости ВЫКЛЮЧЕН! Настройки -> Сеть -> Брандмауэр -> Параметры -> «Включить режим невидимости»."
-fi
+fw_sig() {
+    local out
+    out=$(printf '%s\n' "$ADMIN_PASS" | sudo -S "$FW" "$1" 2>/dev/null)
+    [ -z "$out" ] && out=$("$FW" "$1" 2>/dev/null)
+    case "$out" in *"enabled"*|*"State = 1"*) echo "on" ;;
+                   *"disabled"*|*"State = 0"*) echo "off" ;;
+                   *) echo "unknown" ;; esac
+}
+case "$(fw_sig --getglobalstate)" in
+    on)  good "Брандмауэр включен." ;;
+    off) bad "Брандмауэр ВЫКЛЮЧЕН! Настройки -> Сеть -> Брандмауэр." ;;
+    *)   dunno "Состояние брандмауэра из терминала не читается — проверь глазами: Настройки -> Сеть -> Брандмауэр." ;;
+esac
+case "$(fw_sig --getblockall)" in
+    on)  dunno "Блокировка ВСЕХ входящих включена — с ней VeraCrypt/FUSE-T может виснуть на монтировании." ;;
+    off) good "Блокировка всех входящих выключена — так и задумано (иначе ломается VeraCrypt/FUSE-T)." ;;
+    *)   dunno "Состояние блокировки всех входящих не читается из терминала." ;;
+esac
+case "$(fw_sig --getstealthmode)" in
+    on)  good "Режим невидимости (stealth) включен." ;;
+    off) bad "Режим невидимости ВЫКЛЮЧЕН! Настройки -> Сеть -> Брандмауэр -> Параметры -> «Включить режим невидимости»." ;;
+    *)   dunno "Состояние режима невидимости не читается — проверь: Настройки -> Сеть -> Брандмауэр -> Параметры." ;;
+esac
 
 # --- 3. Wi-Fi ---
 if networksetup -listallnetworkservices 2>/dev/null | grep -qi "wi-fi"; then
