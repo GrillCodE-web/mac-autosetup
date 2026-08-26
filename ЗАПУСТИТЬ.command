@@ -661,6 +661,17 @@ defaults -currentHost write com.apple.coreservices.useractivityd ActivityAdverti
 defaults -currentHost write com.apple.coreservices.useractivityd ActivityReceivingAllowed -bool no 2>/dev/null
 ok "AirDrop и Handoff выключены."
 
+# Recents («Недавние») — глушим везде. Речь о секции недавних программ в Dock,
+# о меню « > Недавние объекты» и об истории недавно открытых файлов: всё это
+# показывает, с чем ты недавно работал, даже когда секретный диск отключен.
+defaults write com.apple.dock show-recents -bool false 2>/dev/null
+defaults write NSGlobalDomain NSRecentDocumentsLimit -int 0 2>/dev/null
+defaults write NSGlobalDomain NSRecentApplicationsLimit -int 0 2>/dev/null
+defaults write NSGlobalDomain NSRecentServerAddressesLimit -int 0 2>/dev/null
+defaults delete com.apple.recentitems 2>/dev/null
+killall Dock 2>/dev/null
+ok "$(L 'Recents выключен: Dock не покажет недавние программы, меню «Недавние объекты» — пустое, история недавно открытого стёрта.' 'Recents is off: no recent apps in the Dock, the Recent Items menu is empty, the recent-open history is wiped.')"
+
 # Геолокация выключить
 as_root defaults write /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled -bool false 2>/dev/null
 ok "Службы геолокации выключены."
@@ -1553,6 +1564,14 @@ else
     ensure_app "$(tg_local_dir)/stable" "Telegram/stable" "Telegram"
     ensure_app "$HOME/Library/Application Support/Sublime Text" "Sublime Text" "Sublime Text"
     ensure_app "$HOME/Library/Application Support/app.ls" "app.ls" "Linken Sphere"
+    # Linken Sphere 2 капризнее остальных: приложение бывает не обновляется и
+    # ругается, пока его не удалить и не поставить заново. Помечаю проблему
+    # (симлинка нет ИЛИ папка на диске пустая), в конце напомню что делать.
+    LS_SRC="$HOME/Library/Application Support/app.ls"
+    LS_TGT=$(readlink "$LS_SRC" 2>/dev/null)
+    if [ ! -L "$LS_SRC" ] || [ -z "$LS_TGT" ] || [ -z "$(ls -A "$LS_TGT" 2>/dev/null)" ]; then
+        LS_FAIL=1
+    fi
 
     # Safari: закладки, история, настройки — тоже на секретный диск. Safari надо
     # ЗАКРЫТЬ, иначе он держит файлы. Папка ~/Library/Safari защищена системой (TCC):
@@ -1616,6 +1635,14 @@ ok "$(L 'АвтоУСТАНОВКА системы ВЫКЛ — Mac не буд�
 # ЧИСТКА ИСТОРИИ ТЕРМИНАЛА
 # ------------------------------------------------------------
 step "Чистка истории терминала"
+# Сначала — Downloads: скачанные установщики (Telegram, VeraCrypt, Excel, ...)
+# лежали в ~/Downloads/autosetup. Они больше не нужны, а Downloads должен
+# остаться пустым — ноль следов настройки в системе.
+if [ -d "$DL" ]; then
+    rm -rf "$DL" 2>/dev/null
+    [ -d "$DL" ] && warn "$(L 'Downloads не отчистился до конца — загляни в ~/Downloads/autosetup и удали руками.' 'Downloads did not clean fully — check ~/Downloads/autosetup and delete it by hand.')" \
+                  || ok "$(L 'Downloads почищен: скачанные установщики удалены.' 'Downloads cleaned: downloaded installers removed.')"
+fi
 # Терминал сохраняет ВСЁ, что ты набирал (пути к секретному диску, имена, пароли,
 # если вводил их в командах), в файлы истории. Стираем их и историю текущей сессии.
 for HF in "$HOME/.zsh_history" "$HOME/.bash_history" "$HOME/.sh_history" \
@@ -1700,6 +1727,11 @@ fi
       "qTox: launch it WITH the disk mounted — the Tox profile is created straight on the disk."
 [ "$SS_MANUAL" = "1" ] && mitem "Настройки -> Общий доступ -> выключи «Общий экран», «Удалённое управление» и «Удалённый вход» (SSH)." \
       "Settings -> Sharing -> turn off «Screen Sharing» and «Remote Management»."
+if [ "$LS_FAIL" = "1" ]; then
+    mitem "Linken Sphere 2: была проблема с подключением его данных — удали приложение и установи заново," \
+          "Linken Sphere 2: its data linking had a problem — uninstall the app and install it again,"
+    dim "$(L 'тогда апдейт приложения сработает. После переустановки запусти ПРОВЕРИТЬ.command — он покажет, что симлинк в порядке.' 'then the app update works. After reinstalling, run ПРОВЕРИТЬ.command — it will confirm the symlink is fine.')"
+fi
 if [ "$INSTALL_EXCEL" = "да" ] || [ -d "/Applications/Microsoft Excel.app" ]; then
     mitem "Excel: открой один раз и войди в аккаунт Microsoft 365 — иначе работает как пробный." \
           "Excel: open once and sign in to a Microsoft 365 account — otherwise it stays a trial."

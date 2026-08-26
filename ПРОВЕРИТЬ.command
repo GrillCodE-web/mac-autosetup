@@ -449,6 +449,11 @@ else
 fi
 
 # --- 14. Следы: логи, корзина, история терминала ---
+if [ "$(defaults read com.apple.dock show-recents 2>/dev/null)" = "0" ]; then
+    good "Recents выключен: Dock и меню «Недавние объекты» ничего не показывают."
+else
+    bad "Recents в Dock ВКЛЮЧЕН и показывает недавние программы (Настройки -> Dock и панели меню -> убери галку «Показывать недавние программы»)."
+fi
 TRASH=$(ls -A "$HOME/.Trash" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$TRASH" = "0" ]; then
     good "Корзина пуста."
