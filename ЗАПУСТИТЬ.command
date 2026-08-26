@@ -196,6 +196,10 @@ precheck_link "MailMate"      "$HOME/Library/Application Support/MailMate"
 precheck_link "Tox (qTox)"    "$HOME/Library/Application Support/Tox"
 TUKAN_PRECHECK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
 precheck_link "Tukan"         "${TUKAN_PRECHECK:-$HOME/Library/Application Support/Tukan}"
+sub "$(L 'Пользовательские папки' 'User folders')"
+precheck_link "$(L 'Рабочий стол' 'Desktop')"   "$HOME/Desktop"
+precheck_link "$(L 'Документы' 'Documents')"    "$HOME/Documents"
+precheck_link "$(L 'Загрузки' 'Downloads')"     "$HOME/Downloads"
 dim "$(L 'Это только осмотр — данные подключаются на Фазе 6, когда диск смонтирован.' 'This is just a look — data is linked in Phase 6 once the disk is mounted.')"
 
 # ------------------------------------------------------------
@@ -241,6 +245,46 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 ok "Пароль администратора верный."
+
+# --- ПОЛНЫЙ ДОСТУП К ДИСКУ (FDA) -------------------------------------------
+# В macOS НЕТ способа запросить его автоматически: ни промпта, ни API — только
+# руками в Настройках). Без него Терминалу запрещено трогать ~/Library/Safari и
+# другие TCC-защищённые папки: rm/ln/cp там падают с «Operation not permitted».
+# Поэтому скрипт проверяет доступ САМ, и если его нет — открывает нужную секцию
+# Настроек и ждёт, пока включишь тумблер. Больше скрипт ничего сделать не может.
+fda_granted() {
+    head -c 1 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" >/dev/null 2>&1 && return 0
+    [ -e "$HOME/Library/Safari/Bookmarks.plist" ] \
+        && head -c 1 "$HOME/Library/Safari/Bookmarks.plist" >/dev/null 2>&1 && return 0
+    [ -e "$HOME/Library/Application Support/Knowledge/knowledgeC.db" ] \
+        && head -c 1 "$HOME/Library/Application Support/Knowledge/knowledgeC.db" >/dev/null 2>&1 && return 0
+    return 1
+}
+if fda_granted; then
+    ok "$(L 'Полный доступ к диску у Терминала уже есть — защищённые папки (Safari и др.) доступны.' 'Terminal already has Full Disk Access — protected folders (Safari etc.) are reachable.')"
+else
+    warn "$(L 'У Терминала НЕТ «Полного доступа к диску» — без него macOS не даст перенести Safari и часть данных на диск.' 'Terminal lacks Full Disk Access — without it macOS will not let me move Safari and some data to the disk.')"
+    echo "   $(L 'Открываю Настройки — включи Терминалу тумблер и возвращайся сюда:' 'Opening Settings — enable the switch for Terminal and come back here:')"
+    echo "   Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску -> Терминал -> ВКЛ"
+    echo "   Settings -> Privacy & Security -> Full Disk Access -> Terminal -> ON"
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null
+    echo "   $(L 'Жду, пока включишь (до 3 минут; я сам замечу и поеду дальше)...' 'Waiting for you to enable it (up to 3 minutes; I will notice and continue)...')"
+    FDA_WAIT=0
+    SPIN_N=0
+    while ! fda_granted && [ $FDA_WAIT -lt 90 ]; do
+        sleep 2
+        FDA_WAIT=$((FDA_WAIT + 1))
+        spin "$(L 'жду Полный доступ к диску' 'waiting for Full Disk Access') — $((FDA_WAIT * 2)) $(L 'сек' 'sec')"
+    done
+    spin_end
+    if fda_granted; then
+        ok "$(L 'Полный доступ к диску включен — продолжаю.' 'Full Disk Access is on — continuing.')"
+    else
+        warn "$(L 'Не дождался. Safari перенести НЕ СМОГУ, остальное продолжаю (в конце будет ручной пункт).' 'Did not get it. Safari CANNOT be moved; continuing with the rest (a manual item will be at the end).')"
+        FDA_MISSING=1
+    fi
+fi
+echo ""
 
 # ВОТ ЧТО ГАСИЛО ЭКРАН И «ПЕРЕЗАГРУЖАЛО» ПОСРЕДИ РАБОТЫ (пока ждёшь Enter
 # или идёт скачивание, а ты Mac не трогаешь):
@@ -661,16 +705,40 @@ defaults -currentHost write com.apple.coreservices.useractivityd ActivityAdverti
 defaults -currentHost write com.apple.coreservices.useractivityd ActivityReceivingAllowed -bool no 2>/dev/null
 ok "AirDrop и Handoff выключены."
 
-# Recents («Недавние») — глушим везде. Речь о секции недавних программ в Dock,
+# Recents («Недавние») — глушим ВЕЗДЕ. Речь о секции недавних программ в Dock,
 # о меню « > Недавние объекты» и об истории недавно открытых файлов: всё это
 # показывает, с чем ты недавно работал, даже когда секретный диск отключен.
+# ВАЖНО (из-за этого раньше «недавние» ОСТАВАЛИСЬ в меню): сами списки лежат
+# НЕ в настройках, а в .sfl2-файлах sharedfilelist — пока их не стереть, меню
+# так и остаётся заполненным, сколько ни выключай лимиты.
 defaults write com.apple.dock show-recents -bool false 2>/dev/null
 defaults write NSGlobalDomain NSRecentDocumentsLimit -int 0 2>/dev/null
 defaults write NSGlobalDomain NSRecentApplicationsLimit -int 0 2>/dev/null
 defaults write NSGlobalDomain NSRecentServerAddressesLimit -int 0 2>/dev/null
 defaults delete com.apple.recentitems 2>/dev/null
+# лимит «Недавние объекты: Нет» — пишем и plist-ключами, как это делает сама macOS
+defaults write com.apple.recentitems RecentApplications -dict MaxAmount 0 2>/dev/null
+defaults write com.apple.recentitems RecentDocuments -dict MaxAmount 0 2>/dev/null
+defaults write com.apple.recentitems RecentServers -dict MaxAmount 0 2>/dev/null
+# сами списки: гасим демона (чтобы не восстановил из памяти), затем стираем файлы
+SFL_DIR="$HOME/Library/Application Support/com.apple.sharedfilelist"
+if [ -d "$SFL_DIR" ]; then
+    killall sharedfilelistd 2>/dev/null
+    sleep 2
+    rm -f "$SFL_DIR/com.apple.LSSharedFileList.RecentApplications"* 2>/dev/null
+    rm -f "$SFL_DIR/com.apple.LSSharedFileList.RecentDocuments"* 2>/dev/null
+    rm -f "$SFL_DIR/com.apple.LSSharedFileList.RecentServers"* 2>/dev/null
+    rm -rf "$SFL_DIR/com.apple.LSSharedFileList.ApplicationRecentDocuments" 2>/dev/null
+fi
 killall Dock 2>/dev/null
-ok "$(L 'Recents выключен: Dock не покажет недавние программы, меню «Недавние объекты» — пустое, история недавно открытого стёрта.' 'Recents is off: no recent apps in the Dock, the Recent Items menu is empty, the recent-open history is wiped.')"
+# честная проверка: .sfl2 будет пересоздан демоном пустым — большой размер = записи остались
+REC_SIZE=$(find "$SFL_DIR" -maxdepth 1 -name "com.apple.LSSharedFileList.Recent*" -type f -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END{print s+0}')
+if [ "${REC_SIZE:-0}" -gt 1000 ]; then
+    warn "$(L 'Списки «Недавние объекты» стерты не до конца — перезагрузи Mac (перезагрузка есть в конце скрипта), меню очистится полностью.' 'Recent Items lists were not fully wiped — reboot the Mac (the script reboots at the end) to fully clear the menu.')"
+    REC_MANUAL=1
+else
+    ok "$(L 'Recents выключен ВЕЗДЕ: секция в Dock скрыта, списки «Недавние объекты» стерты (проверил файлы .sfl2), новые записи не собираются (лимиты = 0).' 'Recents is off everywhere: Dock section hidden, Recent Items lists wiped (verified the .sfl2 files), no new entries are collected (limits = 0).')"
+fi
 
 # Геолокация выключить
 as_root defaults write /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled -bool false 2>/dev/null
@@ -725,24 +793,69 @@ elif [ -n "$WIFI_DEV" ]; then
     fi
 fi
 
-# Часовой пояс под страну VPN
+# Часовой пояс под страну VPN. Раньше ✓ печатался по коду возврата
+# systemsetup, а в системе пояс мог остаться прежним — теперь ПРОВЕРЯЮ факт:
+# читаю /etc/localtime и systemsetup, при промахе ставлю прямым симлинком.
 if [ -n "$VPN_TZ" ]; then
     # Автоустановку времени по геолокации выключаем, иначе macOS вернет реальный пояс
-    as_root defaults write /Library/Preferences/com.apple.timezone.auto Active -bool NO 2>/dev/null
-    as_root systemsetup -settimezone "$VPN_TZ" &>/dev/null && ok "$(L 'Часовой пояс:' 'Time zone:') $VPN_TZ ($(L 'автоопределение в macOS отключено' 'macOS auto time zone disabled'))" || warn "$(L 'Не смог поставить часовой пояс' 'Could not set time zone') $VPN_TZ"
+    as_root defaults write /Library/Preferences/com.apple.timezone.auto Active -bool false 2>/dev/null
+    as_root defaults write /Library/Preferences/com.apple.timezone.auto Active -int 0 2>/dev/null
+    as_root systemsetup -settimezone "$VPN_TZ" &>/dev/null
+    sleep 1
+    tz_now() { readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||'; }
+    if [ "$(tz_now)" != "$VPN_TZ" ]; then
+        # запасной способ: прямой симлинк /etc/localtime (работает, даже когда
+        # systemsetup «отрабатывает», но пояс в системе не меняется)
+        as_root ln -sf "/usr/share/zoneinfo/$VPN_TZ" /etc/localtime 2>/dev/null
+        sleep 1
+    fi
+    if [ "$(tz_now)" = "$VPN_TZ" ] || [ "$(as_root systemsetup -gettimezone 2>/dev/null | awk -F': ' '{print $2}')" = "$VPN_TZ" ]; then
+        ok "$(L 'Часовой пояс' 'Time zone') $VPN_TZ — $(L 'проверил в системе по /etc/localtime: применился. Автоопределение по геолокации отключено (часы не паливают место).' 'verified via /etc/localtime: applied. Auto (location-based) time zone is off.')"
+    else
+        warn "$(L 'Часовой пояс НЕ применился:' 'Time zone did NOT apply:') $(tz_now) $(L 'вместо' 'instead of') $VPN_TZ. $(L 'Поставь руками: Настройки -> Основные -> Дата и время, зона' 'Set it manually: Settings -> General -> Date & Time, zone') $VPN_TZ."
+        TZ_MANUAL=1
+    fi
 fi
 
 # Bluetooth: глушим (второй канал утечки после Wi-Fi).
-# На свежих macOS одного defaults мало — сервис надо ПЕРЕЗАПУСТИТЬ и проверить реальное состояние.
+# ПРАВДА (проверено на свежих macOS): «defaults + перезапуск bluetoothd» радио
+# НЕ выключает, а старая проверка через system_profiler в этот момент показывала
+# «выключено» — отсюда ✓ при реально включенном Bluetooth. Единственный
+# рабочий способ — утилита blueutil: она выключает BT-чип напрямую. Homebrew в
+# скрипте нет, поэтому готовый бинарник качается с GitHub во временную папку
+# /tmp и после перезагрузки исчезает сам.
+BT_BIN=""
+bt_get_util() {
+    [ -n "$BT_BIN" ] && return 0
+    command -v blueutil >/dev/null 2>&1 && { BT_BIN="$(command -v blueutil)"; return 0; }
+    local url z d
+    url=$(curl -sL --max-time 15 "https://api.github.com/repos/toy/blueutil/releases/latest" 2>/dev/null \
+        | tr ',' '\n' | grep -o 'https://[^"]*\.zip' | head -1)
+    [ -z "$url" ] && return 1
+    z="/tmp/blueutil_$$.zip"; d="/tmp/blueutil_$$"
+    info "$(L 'Скачиваю утилиту выключения Bluetooth (blueutil)...' 'Downloading the Bluetooth-off utility (blueutil)...')"
+    curl -sL --fail --max-time 90 -o "$z" "$url" 2>/dev/null || return 1
+    mkdir -p "$d" && ditto -x -k "$z" "$d" 2>/dev/null
+    BT_BIN=$(find "$d" -type f -name blueutil 2>/dev/null | head -1)
+    [ -z "$BT_BIN" ] && return 1
+    chmod +x "$BT_BIN" 2>/dev/null
+    "$BT_BIN" --version >/dev/null 2>&1 || { BT_BIN=""; return 1; }
+    return 0
+}
+
+# Истинное состояние радио: сначала blueutil (читает сам чип), иначе system_profiler.
 bt_is_on() {
+    if [ -n "$BT_BIN" ]; then
+        [ "$("$BT_BIN" --power 2>/dev/null)" = "1" ] && return 0
+        return 1
+    fi
     local s
     s=$(system_profiler SPBluetoothDataType 2>/dev/null | grep -i -m1 "State:")
     case "$s" in
         *[Oo]ff*) return 1 ;;
         *[Oo]n*)  return 0 ;;
     esac
-    s=$(defaults read /Library/Preferences/com.apple.Bluetooth ControllerPowerState 2>/dev/null)
-    [ "$s" = "0" ] && return 1
+    # состояния не поняли — считаем ВКЛЮЧЕННЫМ (худший случай)
     return 0
 }
 
@@ -754,6 +867,12 @@ bt_is_on() {
 # если это только Bluetooth-устройства ввода, предупреждаем — их надо заменить на
 # проводные, иначе выключить BT насовсем нельзя.
 bt_off() {
+    if [ -n "$BT_BIN" ]; then
+        # blueutil под sudo запускать НЕЛЬЗЯ (сам запрещает) — только от пользователя
+        "$BT_BIN" --power 0 >/dev/null 2>&1
+        sleep 2
+        return 0
+    fi
     as_root defaults write /Library/Preferences/com.apple.Bluetooth ControllerPowerState -int 0 2>/dev/null
     as_root defaults write /Library/Preferences/com.apple.Bluetooth.plist ControllerPowerState -int 0 2>/dev/null
     # Автопоиск беспроводных клавы/мыши — из-за него радио включается само
@@ -762,6 +881,7 @@ bt_off() {
     as_root launchctl kickstart -k system/com.apple.bluetoothd 2>/dev/null \
         || as_root killall -9 bluetoothd 2>/dev/null
     sleep 3
+    return 0
 }
 
 # Есть ли подключённые Bluetooth-устройства (из-за них система не отпускает радио)
@@ -771,12 +891,17 @@ if [ "${BT_CONNECTED:-0}" -gt 0 ] 2>/dev/null; then
 fi
 
 info "$(L 'Выключаю Bluetooth...' 'Turning Bluetooth off...')"
+bt_get_util || dim "$(L 'blueutil скачать не удалось — пробую штатный способ.' 'Could not fetch blueutil — trying the built-in way.')"
 bt_off
 if bt_is_on; then
     bt_off
 fi
 if bt_is_on; then
-    warn "$(L 'macOS не дает выключить Bluetooth из терминала (так на свежих версиях).' 'macOS refuses to turn Bluetooth off from the terminal (common on recent versions).')"
+    bt_off
+fi
+sleep 2
+if bt_is_on; then
+    warn "$(L 'Выключить из терминала не вышло (macOS так умеет).' 'Could not turn it off from the terminal (macOS does this).')"
     info "$(L 'Открываю настройки Bluetooth — переключи тумблер в ВЫКЛ, я подожду и проверю сам.' 'Opening Bluetooth settings — flip the switch OFF, I will wait and verify.')"
     open "x-apple.systempreferences:com.apple.BluetoothSettings" 2>/dev/null || open -b com.apple.systempreferences 2>/dev/null
     BT_TRY=0
@@ -784,17 +909,25 @@ if bt_is_on; then
     while bt_is_on && [ $BT_TRY -lt 60 ]; do
         sleep 3
         BT_TRY=$((BT_TRY + 1))
-        spin "$(L 'жду, Bluetooth все еще включен' 'waiting, Bluetooth is still on') — $((BT_TRY * 3)) сек"
+        spin "$(L 'жду, Bluetooth все еще включен' 'waiting, Bluetooth is still on') — $((BT_TRY * 3)) $(L 'сек' 'sec')"
     done
     spin_end
     if bt_is_on; then
         err "$(L 'Bluetooth так и остался ВКЛЮЧЕН — выключи его вручную (добавил в список доделок).' 'Bluetooth is still ON — turn it off manually (added to the manual list).')"
         BT_MANUAL=1
     else
-        ok "$(L 'Bluetooth выключен — вижу это в системе.' 'Bluetooth is off — confirmed by the system.')"
+        ok "$(L 'Bluetooth выключен — подтверждаю по состоянию самого чипа.' 'Bluetooth is off — confirmed from the chip state itself.')"
     fi
 else
-    ok "$(L 'Bluetooth выключен — вижу это в системе.' 'Bluetooth is off — confirmed by the system.')"
+    # Перепроверка через 5 сек: macOS умеет тут же включить радио обратно
+    # (беспроводная клавиатура/мышь/наушники рядом) — не даю напечатать ложное ✓
+    sleep 5
+    if bt_is_on; then
+        warn "$(L 'Bluetooth выключился, но macOS включила его ОБРАТНО в течение 5 секунд — рядом беспроводная клавиатура/мышь (или AirPods в ушах). macOS делает так всегда, пока устройство ввода беспроводное: используй ПРОВОДНЫЕ клавиатуру и мышь.' 'Bluetooth went off but macOS turned it right back ON within 5 seconds — a wireless keyboard/mouse (or AirPods) is nearby. macOS always does this while the input device is wireless: use a WIRED keyboard and mouse.')"
+        BT_MANUAL=1
+    else
+        ok "$(L 'Bluetooth выключен — подтверждаю по состоянию самого чипа.' 'Bluetooth is off — confirmed from the chip state itself.')"
+    fi
 fi
 
 # Пароль сразу после заставки/сна экрана — раньше это был ручной пункт
@@ -1334,15 +1467,26 @@ else
         fi
         mkdir -p "$(dirname "$src")"
         if [ -e "$src" ]; then
-            rm -rf "$src"
-            ok "$(basename "$src"): старая папка из системы стерта (данные уже на диске)."
+            # TCC-защищённые папки (~/Library/Safari) rm не трогает без Полного
+            # доступа к диску — раньше «моё» сообщение о стирании печаталось
+            # ВСЕГДА, а ln потом делал вложенный симлинк «Safari/Safari».
+            if rm -rf "$src" 2>/dev/null && [ ! -e "$src" ]; then
+                ok "$(basename "$src"): старая папка из системы стерта (данные уже на диске)."
+            else
+                err "$(basename "$src") — macOS не дала стереть папку в системе («Operation not permitted»)."
+                dim "$(L 'Симлинк НЕ создаю (иначе он «провалится» внутрь старой папки). Причина: у Терминала нет Полного доступа к диску.' 'NOT creating the symlink (it would nest INSIDE the old folder). Cause: Terminal lacks Full Disk Access.')"
+                TCC_BLOCK=1
+                return 1
+            fi
         fi
         ln -s "$dst" "$src"
         if [ -L "$src" ]; then
             ok "$(basename "$src") — подключен с диска."
         else
             err "$(basename "$src") — симлинк НЕ создан!"
+            return 1
         fi
+        return 0
     }
 
     # --- 0a) ГЛУБОКИЙ ПОИСК: данные могут лежать в ЛЮБОЙ подпапке диска, не только в DataAPP ---
@@ -1383,6 +1527,12 @@ else
         return 0
     }
     echo "$(L 'Ищу данные приложений по ВСЕМУ диску (включая подпапки) — переносить никуда не буду.' 'Scanning the whole disk (all subfolders) — nothing will be moved.')"
+    # Чистка после старой версии скрипта: Safari по ошибке линковался в
+    # Application Support/Safari (лишний симлинк не туда) — убираю, если есть.
+    if [ -L "$HOME/Library/Application Support/Safari" ]; then
+        rm -f "$HOME/Library/Application Support/Safari" 2>/dev/null
+        dim "$(L 'Убрал лишний симлинк Safari из Application Support (баг старой версии).' 'Removed a stray Safari symlink from Application Support (old-version bug).')"
+    fi
     TG_SRC="$(tg_local_dir)/stable"
     if already_linked "$TG_SRC" "Telegram"; then
         :
@@ -1460,6 +1610,11 @@ else
                 src="$(tg_local_dir)/stable"
                 [ -d "$item/stable" ] || continue
                 sub="$item/stable" ;;
+            Safari)
+                # Данные Safari лежат в ~/Library/Safari, а НЕ в Application
+                # Support — раньше линковались не туда.
+                src="$HOME/Library/Safari"
+                sub="$item" ;;
             *)
                 src="$HOME/Library/Application Support/$name"
                 sub="$item" ;;
@@ -1541,20 +1696,33 @@ else
             mkdir -p "$(dirname "$dst")"
             cp -R "$src" "$dst" 2>/dev/null
             if [ $? -eq 0 ]; then
-                rm -rf "$src"
-                ok "$dstname — данные перенесены на диск, копия в системе СТЕРТА."
-                link_to "$src" "$dst"
+                rm -rf "$src" 2>/dev/null
+                if [ ! -e "$src" ]; then
+                    ok "$dstname — данные перенесены на диск, копия в системе СТЕРТА."
+                    link_to "$src" "$dst"
+                else
+                    err "$dstname — скопировано на диск, но стереть копию в системе macOS не дала («Operation not permitted»)."
+                    dim "$(L 'Данные теперь И на диске, И в системе. Дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), перезапусти Терминал и запусти скрипт — он дотрёт и подключит симлинк.' 'Data is now BOTH on the disk and in the system. Grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), restart Terminal and re-run the script — it will finish wiping and link it.')"
+                    TCC_BLOCK=1
+                fi
             else
                 rm -rf "$dst"
                 err "$dstname — копирование на диск не удалось (macOS не дала), оригинал остался в системе."
                 dim "$(L 'Причина почти всегда одна: дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), перезапусти Терминал и запусти скрипт еще раз.' 'Almost always the same cause: grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), restart Terminal and run the script again.')"
+                TCC_BLOCK=1
             fi
         elif offer_launch "$launchname" "$src"; then
             # Приложение создало папку в системе — переносим её на диск
             mkdir -p "$(dirname "$dst")"
-            cp -R "$src" "$dst" && rm -rf "$src"
-            ok "$dstname — папка создана приложением и перенесена на диск."
-            link_to "$src" "$dst"
+            cp -R "$src" "$dst" 2>/dev/null && rm -rf "$src" 2>/dev/null
+            if [ ! -e "$src" ]; then
+                ok "$dstname — папка создана приложением и перенесена на диск."
+                link_to "$src" "$dst"
+            else
+                err "$dstname — папка создана приложением, но перенести на диск не вышло; папка осталась в системе."
+                dim "$(L 'Проверь Полный доступ к диску у Терминала (см. выше) и запусти скрипт еще раз.' 'Check Terminal Full Disk Access (see above) and re-run the script.')"
+                TCC_BLOCK=1
+            fi
         else
             mkdir -p "$dst"
             link_to "$src" "$dst"
@@ -1597,6 +1765,86 @@ else
         ensure_app "$HOME/Library/Application Support/Tukan" "Tukan" "Tukan"
     else
         warn "Tukan: папка не найдена. Запусти Tukan один раз и перезапусти скрипт."
+    fi
+
+    # --- 3) ПОЛЬЗОВАТЕЛЬСКИЕ ПАПКИ: Рабочий стол, Документы, Загрузки ---
+    # Главное правило схемы: в системе не остается НИ ОДНОГО файла, включая
+    # «просто скриншот на столе». Содержимое этих трёх папок переезжает на
+    # секретный диск, а сами папки становятся симлинками на диск: Finder и
+    # диалоги сохранения работают как обычно, но файлы физически пишутся
+    # сразу на диск. Без диска папки «пустые» — так и задумано.
+    # Ненулевой код выхода не роняет скрипт: файлы остаются в системе, об
+    # этом честно скажет ПРОВЕРИТЬ.command.
+    ensure_user_dir() {
+        local src="$1" dstname="$2" label="$3"
+        local dst="$DATA/$dstname"
+        if [ -L "$src" ]; then
+            ok "$label — $(L 'уже симлинк на диск, пропускаю.' 'already a symlink to the disk, skipping.')"
+            return 0
+        fi
+        mkdir -p "$(dirname "$dst")"
+        # Пустоту папки определяем ТОЛЬКО если её удалось прочитать: без
+        # «Полного доступа к диску» чтение Desktop/Documents/Downloads молча
+        # проваливается, и папку нельзя считать пустой — иначе удалили бы
+        # непрочитанные файлы.
+        local src_cnt=0 unreadable=0
+        if [ -d "$src" ]; then
+            if ls -A "$src" >/dev/null 2>&1; then
+                src_cnt=$(find "$src" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+            else
+                unreadable=1
+            fi
+        fi
+        if [ "$unreadable" = "1" ]; then
+            err "$label — $(L 'не смог прочитать папку (macOS не дала), ничего не трогаю.' 'could not read the folder (macOS refused), leaving it untouched.')"
+            dim "$(L 'Дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), перезапусти Терминал и запусти скрипт еще раз.' 'Grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), restart Terminal and run the script again.')"
+            return 1
+        fi
+        if [ "$src_cnt" -gt 0 ]; then
+            mkdir -p "$dst"
+            cp -Rp "$src/." "$dst/" 2>/dev/null
+            local rc=$?
+            local dst_cnt
+            dst_cnt=$(find "$dst" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+            if [ $rc -ne 0 ] || [ -z "$dst_cnt" ] || [ "$dst_cnt" -lt "$src_cnt" ]; then
+                err "$label — $(L 'перенос не удался, оригиналы ОСТАЛИСЬ в системе.' 'move failed, originals are KEPT in the system.')"
+                dim "$(L 'Либо дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), либо на диске кончилось место. Перезапусти Терминал и запусти скрипт еще раз.' 'Either grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), or the disk is out of space. Restart Terminal and run the script again.')"
+                return 1
+            fi
+        fi
+        mkdir -p "$dst" 2>/dev/null
+        rm -rf "$src" 2>/dev/null
+        ln -s "$dst" "$src" 2>/dev/null || { sleep 1; rm -rf "$src" 2>/dev/null; ln -s "$dst" "$src" 2>/dev/null; }
+        if [ -L "$src" ]; then
+            if [ "$src_cnt" -gt 0 ]; then
+                ok "$label — $(L 'перенесено объектов:' 'items moved:') $src_cnt → $(L 'на секретный диск, в системе остался симлинк.' 'to the secret disk, a symlink left in the system.')"
+            else
+                ok "$label — $(L 'папка была пуста, подключена с диска симлинком.' 'folder was empty, linked from the disk with a symlink.')"
+            fi
+        else
+            err "$label — $(L 'симлинк НЕ создан (папка осталась в системе).' 'symlink NOT created (folder left in the system).')"
+            return 1
+        fi
+    }
+
+    echo ""
+    info "$(L 'Пользовательские папки: Рабочий стол, Документы, Загрузки — тоже на секретный диск.' 'User folders: Desktop, Documents, Downloads — onto the secret disk too.')"
+    DO_UF="да"
+    if [ "$AUTO_LINK" != "да" ]; then
+        read -r -p "   $(L 'Перенести их содержимое на диск и заменить папки симлинками? (да/нет) [да]' 'Move their contents to the disk and replace the folders with symlinks? (yes/no) [yes]'): " UF
+        DO_UF=$(yn "${UF:-да}")
+    fi
+    if [ "$DO_UF" = "да" ]; then
+        dim "$(L 'macOS может спросить «Терминалу нужен доступ к папке...» — нажми «Разрешить».' 'macOS may ask “Terminal would like to access files in...” — click “Allow”.')"
+        ensure_user_dir "$HOME/Desktop"   "Desktop"   "$(L 'Рабочий стол' 'Desktop')"
+        ensure_user_dir "$HOME/Documents" "Documents" "$(L 'Документы' 'Documents')"
+        # Установщики из ~/Downloads/autosetup уже отработали — их сотни мегабайт
+        # незачем катать на шифрованный диск (в конце они все равно стираются).
+        [ -d "$DL" ] && rm -rf "$DL" 2>/dev/null
+        ensure_user_dir "$HOME/Downloads" "Downloads" "$(L 'Загрузки' 'Downloads')"
+        dim "$(L 'Всё, что теперь сохраняешь в эти папки, сразу попадает на диск. Без диска они пустые — так и задумано.' 'Everything saved into these folders now goes straight to the disk. Without the disk they are empty — by design.')"
+    else
+        warn "$(L 'Пользовательские папки остались в системе — файлы в них видны и без диска, ПРОВЕРИТЬ будет ругаться.' 'User folders stayed in the system — files in them are visible without the disk, ПРОВЕРИТЬ will complain.')"
     fi
 fi
 
@@ -1649,15 +1897,23 @@ for HF in "$HOME/.zsh_history" "$HOME/.bash_history" "$HOME/.sh_history" \
           "$HOME/.python_history" "$HOME/.lesshst" "$HOME/.local/share/fish/fish_history"; do
     [ -e "$HF" ] && rm -f "$HF" 2>/dev/null
 done
+# Штатный выключатель zsh-сессий от Apple (/etc/zshrc_Apple_Terminal проверяет
+# этот файл). Без него уже открытое окно Терминала при закрытии сыплет ошибками
+# «locking failed ... .historynew» (то, что ты видел) — с ним новые окна вообще
+# не записывают сессии.
+touch "$HOME/.zsh_sessions_disable"
 rm -rf "$HOME/.zsh_sessions" 2>/dev/null
+# пустая папка взамен — уже открытое окно Терминала при закрытии не ругается
+mkdir -p "$HOME/.zsh_sessions"
 history -c 2>/dev/null
 ok "История терминала очищена."
 echo ""
 echo "$(L 'Если позже снова наберёшь что-то в Терминале — почисти этими командами:' 'If you type anything in Terminal again — clean it with these commands:')"
 echo '   history -c'
 echo '   rm -f ~/.zsh_history ~/.bash_history ~/.python_history'
-echo '   rm -rf ~/.zsh_sessions'
-echo "$(L '   потом ЗАКРОЙ окно Терминала (иначе история сессии запишется обратно при выходе).' '   then CLOSE the Terminal window (otherwise the session history is written back on exit).')"
+echo '   touch ~/.zsh_sessions_disable'
+echo '   rm -rf ~/.zsh_sessions && mkdir -p ~/.zsh_sessions'
+echo "$(L '   про файл .zsh_sessions_disable: это ШТАТНЫЙ выключатель сессий zsh от Apple — с ним Терминал вообще перестаёт записывать историю сессий (ошибок «locking failed» после ручного удаления папки тоже не будет). Скрипт создал его тебе заранее.' '   about .zsh_sessions_disable: it is Apple OFFICIAL opt-out for zsh sessions — Terminal stops persisting session history at all (and the «locking failed» errors after manual folder removal disappear too). The script has already created it for you.')"
 
 # ------------------------------------------------------------
 # ТАЙМЕРЫ ЭКРАНА, ЗАСТАВКИ И АВТОВЫХОДА (применяем в самом конце)
@@ -1736,9 +1992,16 @@ if [ "$INSTALL_EXCEL" = "да" ] || [ -d "/Applications/Microsoft Excel.app" ]; 
     mitem "Excel: открой один раз и войди в аккаунт Microsoft 365 — иначе работает как пробный." \
           "Excel: open once and sign in to a Microsoft 365 account — otherwise it stays a trial."
 fi
-mitem "Safari: если увидел выше «копирование не удалось» — дай Терминалу Полный доступ к диску:" \
-      "Safari: if you saw «copy failed» above — grant Terminal Full Disk Access:"
-dim "Настройки -> Конфиденциальность -> Полный доступ к диску -> добавь Терминал, потом запусти скрипт снова."
+if [ "$TCC_BLOCK" = "1" ] || [ "$FDA_MISSING" = "1" ]; then
+    mitem "Safari/данные: перенос уперся в «Полный доступ к диску» Терминала — дай его:" \
+          "Safari/data: the move hit Terminal Full Disk Access — grant it:"
+    dim "Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску -> Терминал -> ВКЛ, перезапусти Терминал и запусти скрипт снова — он всё дотащит."
+    dim "Settings -> Privacy & Security -> Full Disk Access -> Terminal -> ON, restart Terminal and re-run the script — it will finish the job."
+fi
+[ "$TZ_MANUAL" = "1" ] && mitem "Часовой пояс не применился: Настройки -> Основные -> Дата и время -> часовой пояс $VPN_TZ (автоопределение — выкл)." \
+      "Time zone did not apply: Settings -> General -> Date & Time -> zone $VPN_TZ (auto — off)."
+[ "$REC_MANUAL" = "1" ] && mitem "«Недавние объекты»: после перезагрузки открой меню  -> «Недавние объекты» и убедись, что оно пустое." \
+      "Recent Items: after the reboot open  -> «Recent Items» and make sure it is empty."
 [ $MN -eq 0 ] && ok "Ручных пунктов нет — все сделано скриптом."
 echo ""
 echo -e "  ${BOLD}ГЛАВНОЕ ПРАВИЛО:${NC} ничего не храни в системе Mac и на Рабочем столе —"

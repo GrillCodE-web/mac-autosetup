@@ -193,7 +193,7 @@ elif echo "$BT_LIVE" | grep -qi "on"; then
         dim "Пока они подключены, macOS сам включает Bluetooth. Замени клаву/мышь на ПРОВОДНЫЕ."
     fi
 elif [ "$BT" = "0" ]; then
-    good "Bluetooth выключен (по настройке)."
+    dunno "Настройка говорит «выключен», но живое состояние радио не прочитал — проверь глазами: Настройки -> Bluetooth."
 else
     dunno "Bluetooth: не смог определить — проверь глазами: Настройки -> Bluetooth."
 fi
@@ -278,13 +278,38 @@ check_link "$HOME/Library/Safari" "Safari"
 TUK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
 [ -n "$TUK" ] && check_link "$TUK" "Tukan"
 
-# Данные, которые НЕ должны валяться в системе
-for JUNK in "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads"; do
-    N=$(ls -A "$JUNK" 2>/dev/null | grep -v "^autosetup$" | wc -l | tr -d ' ')
-    if [ "$N" = "0" ]; then
-        good "$(basename "$JUNK"): пусто — правильно, файлы должны быть только на диске."
+# Пользовательские папки: сами должны быть симлинками на секретный диск —
+# тогда всё, что в них сохраняют/качают, физически лежит на диске, а не в системе.
+for UDIR in "Desktop:Рабочий стол" "Documents:Документы" "Downloads:Загрузки"; do
+    UPATH="$HOME/${UDIR%%:*}"
+    UNAME="${UDIR##*:}"
+    if [ -L "$UPATH" ]; then
+        UTGT=$(readlink "$UPATH")
+        case "$UTGT" in
+            /Volumes/*)
+                if [ -e "$UPATH" ]; then
+                    UCNT=$(ls -A "$UPATH/" 2>/dev/null | wc -l | tr -d ' ')
+                    if [ "$UCNT" = "0" ]; then
+                        good "$UNAME — симлинк на диск (сейчас пусто — это нормально)."
+                    else
+                        good "$UNAME — симлинк на диск: файлы хранятся на диске, а не в системе ($UCNT объектов)."
+                    fi
+                    dim "$UTGT"
+                else
+                    dunno "$UNAME — симлинк на диск есть, но диск сейчас не подключен (это норма без диска)."
+                fi ;;
+            *)
+                bad "$UNAME — симлинк ведет НЕ на внешний диск, а в: $UTGT" ;;
+        esac
+    elif [ -d "$UPATH" ]; then
+        UN=$(ls -A "$UPATH" 2>/dev/null | grep -v "^autosetup$" | wc -l | tr -d ' ')
+        if [ "$UN" = "0" ]; then
+            bad "$UNAME — обычная папка в системе. Запусти ЗАПУСТИТЬ.command: заменит её симлинком на секретный диск."
+        else
+            bad "$UNAME — в системе лежит $UN объектов! Запусти ЗАПУСТИТЬ.command: перенесет их на секретный диск и заменит папку симлинком."
+        fi
     else
-        dunno "$(basename "$JUNK"): лежит $N объектов — перенеси их на секретный диск."
+        dunno "$UNAME — нет ни папки, ни симлинка (ЗАПУСТИТЬ.command не донастроил?)."
     fi
 done
 
@@ -366,28 +391,49 @@ fi
 
 # Есть ли обновления, которые пора поставить. СТАВИТЬ их за тебя скрипт НЕ будет
 # (автоустановка выключена нарочно — без внезапных перезагрузок), просто скажу.
-UPDF="/tmp/.maccheck_upd_$$"
-( softwareupdate --list >"$UPDF" 2>/dev/null ) &
-UPD_PID=$!
-UPD_TRY=0
-while kill -0 $UPD_PID 2>/dev/null && [ $UPD_TRY -lt 120 ]; do
-    spin "проверяю обновления macOS"
-    sleep 0.3
-    UPD_TRY=$((UPD_TRY + 1))
+# СНАЧАЛА честно проверяем доступ до серверов Apple: раньше после 36 секунд
+# ожидания softwareupdate убивался и печаталось «нет сети», хотя сеть работала —
+# Apple просто медленно отвечает после переустановки. Теперь сеть проверяется
+# отдельно (до трёх серверов Apple), softwareupdate ждём до 3 минут, а при
+# неудаче показываем его собственную ошибку вместо выдумки про «нет сети».
+NET_OK=0
+for NETURL in "https://swscan.apple.com" "https://swcdn.apple.com" "https://support.apple.com"; do
+    if curl -s -m 8 -o /dev/null "$NETURL"; then NET_OK=1; break; fi
 done
-kill $UPD_PID 2>/dev/null; wait $UPD_PID 2>/dev/null
-spin_end
-UPD=$(cat "$UPDF" 2>/dev/null)
-rm -f "$UPDF"
-if printf '%s\n' "$UPD" | grep -qi "No new software available"; then
-    good "Обновлений macOS сейчас нет — всё свежее."
-elif printf '%s\n' "$UPD" | grep -q '^[[:space:]]*\*'; then
-    dunno "Есть обновления macOS — поставь их сам, когда удобно (Настройки -> Основные -> Обновление ПО)."
-    printf '%s\n' "$UPD" | grep '^[[:space:]]*\*' | sed 's/^[*[:space:]]*//' | head -5 | while IFS= read -r u; do
-        dim "обновление: $u"
-    done
+if [ $NET_OK -eq 0 ]; then
+    dunno "Сети до серверов Apple сейчас нет — проверь потом сам: Настройки -> Основные -> Обновление ПО."
 else
-    dunno "Не смог проверить обновления (нет сети?). Проверь потом сам: Настройки -> Основные -> Обновление ПО."
+    UPDF="/tmp/.maccheck_upd_$$"
+    UPDE="$UPDF.err"
+    ( softwareupdate --list >"$UPDF" 2>"$UPDE" ) &
+    UPD_PID=$!
+    UPD_TRY=0
+    # 600 * 0.3 сек = до 3 минут: после чистой установки каталог тянется долго
+    while kill -0 $UPD_PID 2>/dev/null && [ $UPD_TRY -lt 600 ]; do
+        spin "проверяю обновления macOS — $((UPD_TRY / 10 * 3 + 3)) сек"
+        sleep 0.3
+        UPD_TRY=$((UPD_TRY + 1))
+    done
+    kill $UPD_PID 2>/dev/null; wait $UPD_PID 2>/dev/null
+    spin_end
+    UPD=$(cat "$UPDF" 2>/dev/null)
+    UPDERR=$(grep -m3 -vi "password" "$UPDE" 2>/dev/null | grep -vi '^[[:space:]]*$')
+    rm -f "$UPDF" "$UPDE"
+    UPDSEC=$((UPD_TRY / 10 * 3))
+    if printf '%s\n' "$UPD" | grep -qiE "No new software available|No updates available"; then
+        good "Обновлений macOS сейчас нет — всё свежее (сеть работает)."
+    elif printf '%s\n' "$UPD" | grep -q '^[[:space:]]*\*'; then
+        dunno "Есть обновления macOS — поставь их сам, когда удобно (Настройки -> Основные -> Обновление ПО)."
+        printf '%s\n' "$UPD" | grep '^[[:space:]]*\*' | sed 's/^[*[:space:]]*//' | head -5 | while IFS= read -r u; do
+            dim "обновление: $u"
+        done
+    elif [ -n "$UPDERR" ]; then
+        dunno "Сеть есть, но проверка обновлений упала с ошибкой (отвечает сам Apple):"
+        printf '%s\n' "$UPDERR" | while IFS= read -r u; do dim "$u"; done
+        dim "Проверь потом сам: Настройки -> Основные -> Обновление ПО."
+    else
+        dunno "Сеть работает, но серверы Apple не ответили за $UPDSEC сек (бывает после переустановки). Проверь потом сам: Настройки -> Основные -> Обновление ПО."
+    fi
 fi
 
 # --- 11. Экран блокировки / выключение дисплея ---
@@ -450,9 +496,28 @@ fi
 
 # --- 14. Следы: логи, корзина, история терминала ---
 if [ "$(defaults read com.apple.dock show-recents 2>/dev/null)" = "0" ]; then
-    good "Recents выключен: Dock и меню «Недавние объекты» ничего не показывают."
+    good "Recents в Dock выключен (секции недавних программ нет)."
 else
     bad "Recents в Dock ВКЛЮЧЕН и показывает недавние программы (Настройки -> Dock и панели меню -> убери галку «Показывать недавние программы»)."
+fi
+# Настоящее хранилище меню «Недавние объекты» — .sfl2-файлы sharedfilelist:
+# если в них есть записи (пути/приложения), меню НЕ пустое.
+SFL_DIR="$HOME/Library/Application Support/com.apple.sharedfilelist"
+RECOK=1
+if [ -d "$SFL_DIR" ]; then
+    for F in "$SFL_DIR/com.apple.LSSharedFileList.RecentApplications.sfl2" \
+             "$SFL_DIR/com.apple.LSSharedFileList.RecentDocuments.sfl2" \
+             "$SFL_DIR/com.apple.LSSharedFileList.RecentServers.sfl2"; do
+        if [ -f "$F" ] && strings "$F" 2>/dev/null | grep -q -e "file://" -e ".app" -e "smb://" -e "afp://"; then
+            RECOK=0
+            dim "Остались записи в: $(basename "$F")"
+        fi
+    done
+fi
+if [ "$RECOK" = "1" ]; then
+    good "Списки «Недавние объекты» пусты — меню ничего не покажет."
+else
+    bad "В списках «Недавние объекты» остались записи — запусти ЗАПУСТИТЬ.command (сотрет) или перезагрузи Mac."
 fi
 TRASH=$(ls -A "$HOME/.Trash" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$TRASH" = "0" ]; then
@@ -464,10 +529,26 @@ if [ -s "$HOME/.bash_history" ] || [ -s "$HOME/.zsh_history" ] || [ -s "$HOME/.p
     dunno "История терминала не пуста — почисти. Введи в Терминале ЭТИ команды:"
     dim "history -c"
     dim "rm -f ~/.zsh_history ~/.bash_history ~/.python_history"
-    dim "rm -rf ~/.zsh_sessions"
+    dim "touch ~/.zsh_sessions_disable && rm -rf ~/.zsh_sessions && mkdir -p ~/.zsh_sessions"
     dim "потом ЗАКРОЙ окно Терминала (иначе история запишется обратно при выходе)."
 else
     good "История терминала пуста."
+fi
+if [ -e "$HOME/.zsh_sessions_disable" ]; then
+    good "Сессионная история zsh отключена насовсем (~/.zsh_sessions_disable)."
+else
+    dunno "zsh все еще пишет сессионные файлы — создай ~/.zsh_sessions_disable (ЗАПУСТИТЬ.command делает это сам)."
+fi
+
+# --- 15. Часовой пояс (не палит реальное место) ---
+TZ_LINK=$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')
+TZAUTO=$(defaults read /Library/Preferences/com.apple.timezone.auto Active 2>/dev/null)
+if [ -n "$TZ_LINK" ] && [ "$TZAUTO" != "1" ]; then
+    good "Часовой пояс зафиксирован: $TZ_LINK (автоопределение по геолокации выключено — часы не выдают реальное место)."
+elif [ "$TZAUTO" = "1" ]; then
+    bad "Автоопределение часового пояса ВКЛЮЧЕНО — macOS может вернуть реальный пояс (Настройки -> Основные -> Дата и время)."
+else
+    dunno "Часовой пояс не прочитал — проверь: Настройки -> Основные -> Дата и время."
 fi
 
 # --- ИТОГ ---
