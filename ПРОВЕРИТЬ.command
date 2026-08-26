@@ -288,40 +288,8 @@ check_link "$HOME/Library/Safari" "Safari"
 TUK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
 [ -n "$TUK" ] && check_link "$TUK" "Tukan"
 
-# Пользовательские папки: сами должны быть симлинками на секретный диск —
-# тогда всё, что в них сохраняют/качают, физически лежит на диске, а не в системе.
-for UDIR in "Desktop:Рабочий стол" "Documents:Документы" "Downloads:Загрузки"; do
-    UPATH="$HOME/${UDIR%%:*}"
-    UNAME="${UDIR##*:}"
-    if [ -L "$UPATH" ]; then
-        UTGT=$(readlink "$UPATH")
-        case "$UTGT" in
-            /Volumes/*)
-                if [ -e "$UPATH" ]; then
-                    UCNT=$(ls -A "$UPATH/" 2>/dev/null | wc -l | tr -d ' ')
-                    if [ "$UCNT" = "0" ]; then
-                        good "$UNAME — симлинк на диск (сейчас пусто — это нормально)."
-                    else
-                        good "$UNAME — симлинк на диск: файлы хранятся на диске, а не в системе ($UCNT объектов)."
-                    fi
-                    dim "$UTGT"
-                else
-                    dunno "$UNAME — симлинк на диск есть, но диск сейчас не подключен (это норма без диска)."
-                fi ;;
-            *)
-                bad "$UNAME — симлинк ведет НЕ на внешний диск, а в: $UTGT" ;;
-        esac
-    elif [ -d "$UPATH" ]; then
-        UN=$(ls -A "$UPATH" 2>/dev/null | grep -v "^autosetup$" | wc -l | tr -d ' ')
-        if [ "$UN" = "0" ]; then
-            bad "$UNAME — обычная папка в системе. Запусти ЗАПУСТИТЬ.command: заменит её симлинком на секретный диск."
-        else
-            bad "$UNAME — в системе лежит $UN объектов! Запусти ЗАПУСТИТЬ.command: перенесет их на секретный диск и заменит папку симлинком."
-        fi
-    else
-        dunno "$UNAME — нет ни папки, ни симлинка (ЗАПУСТИТЬ.command не донастроил?)."
-    fi
-done
+# Пользовательские папки (Рабочий стол/Документы/Загрузки) НЕ проверяем:
+# фича их переноса на диск снята — папки остаются в системе как есть.
 
 sect "ПРОГРАММЫ / APPLICATIONS"
 
@@ -505,30 +473,8 @@ else
 fi
 
 # --- 14. Следы: логи, корзина, история терминала ---
-if [ "$(defaults read com.apple.dock show-recents 2>/dev/null)" = "0" ]; then
-    good "Recents в Dock выключен (секции недавних программ нет)."
-else
-    bad "Recents в Dock ВКЛЮЧЕН и показывает недавние программы (Настройки -> Dock и панели меню -> убери галку «Показывать недавние программы»)."
-fi
-# Настоящее хранилище меню «Недавние объекты» — .sfl2-файлы sharedfilelist:
-# если в них есть записи (пути/приложения), меню НЕ пустое.
-SFL_DIR="$HOME/Library/Application Support/com.apple.sharedfilelist"
-RECOK=1
-if [ -d "$SFL_DIR" ]; then
-    for F in "$SFL_DIR/com.apple.LSSharedFileList.RecentApplications.sfl2" \
-             "$SFL_DIR/com.apple.LSSharedFileList.RecentDocuments.sfl2" \
-             "$SFL_DIR/com.apple.LSSharedFileList.RecentServers.sfl2"; do
-        if [ -f "$F" ] && strings "$F" 2>/dev/null | grep -q -e "file://" -e ".app" -e "smb://" -e "afp://"; then
-            RECOK=0
-            dim "Остались записи в: $(basename "$F")"
-        fi
-    done
-fi
-if [ "$RECOK" = "1" ]; then
-    good "Списки «Недавние объекты» пусты — меню ничего не покажет."
-else
-    bad "В списках «Недавние объекты» остались записи — запусти ЗАПУСТИТЬ.command (сотрет) или перезагрузи Mac."
-fi
+# «Недавние объекты» (Dock-секция, меню яблока, .sfl2) НЕ проверяем и НЕ трогаем:
+# вмешательство в списки недавних вешало меню системы — фича снята решением владельца.
 TRASH=$(ls -A "$HOME/.Trash" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$TRASH" = "0" ]; then
     good "Корзина пуста."

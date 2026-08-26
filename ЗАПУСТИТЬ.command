@@ -24,7 +24,7 @@ NC='\033[0m'
 # Маркер версии: если при запуске НЕ напечаталась строка «ВЕРСИЯ СКРИПТА» ниже —
 # ты запускаешь УСТАРЕВШУЮ копию (в старых та самая гонка, что вешала меню).
 # Проверка без запуска: grep -c SCRIPT_VERSION ЗАПУСТИТЬ.command  (0 = старая)
-readonly SCRIPT_VERSION="v3-2026.08.26 — исправлены «недавние» (вешали меню) и подмена папок"
+readonly SCRIPT_VERSION="v4-2026.08.26 — СНЯТЫ «Недавние» и перенос Desktop/Documents/Downloads (вешали Finder/меню); данные приложений подключаются как раньше"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -202,10 +202,7 @@ precheck_link "MailMate"      "$HOME/Library/Application Support/MailMate"
 precheck_link "Tox (qTox)"    "$HOME/Library/Application Support/Tox"
 TUKAN_PRECHECK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
 precheck_link "Tukan"         "${TUKAN_PRECHECK:-$HOME/Library/Application Support/Tukan}"
-sub "$(L 'Пользовательские папки' 'User folders')"
-precheck_link "$(L 'Рабочий стол' 'Desktop')"   "$HOME/Desktop"
-precheck_link "$(L 'Документы' 'Documents')"    "$HOME/Documents"
-precheck_link "$(L 'Загрузки' 'Downloads')"     "$HOME/Downloads"
+dim "$(L 'Пользовательские папки (Рабочий стол, Документы, Загрузки) не проверяю и не переношу — фича снята.' 'User folders (Desktop, Documents, Downloads) are not checked nor moved — feature removed.')"
 dim "$(L 'Это только осмотр — данные подключаются на Фазе 6, когда диск смонтирован.' 'This is just a look — data is linked in Phase 6 once the disk is mounted.')"
 
 # ------------------------------------------------------------
@@ -784,43 +781,9 @@ defaults -currentHost write com.apple.coreservices.useractivityd ActivityAdverti
 defaults -currentHost write com.apple.coreservices.useractivityd ActivityReceivingAllowed -bool no 2>/dev/null
 ok "AirDrop и Handoff выключены."
 
-# Recents («Недавние») — глушим ВЕЗДЕ. Речь о секции недавних программ в Dock,
-# о меню « > Недавние объекты» и об истории недавно открытых файлов: всё это
-# показывает, с чем ты недавно работал, даже когда секретный диск отключен.
-# ВАЖНО (из-за этого раньше «недавние» ОСТАВАЛИСЬ в меню): сами списки лежат
-# НЕ в настройках, а в .sfl2-файлах sharedfilelist — пока их не стереть, меню
-# так и остаётся заполненным, сколько ни выключай лимиты.
-defaults write com.apple.dock show-recents -bool false 2>/dev/null
-defaults write NSGlobalDomain NSRecentDocumentsLimit -int 0 2>/dev/null
-defaults write NSGlobalDomain NSRecentApplicationsLimit -int 0 2>/dev/null
-defaults write NSGlobalDomain NSRecentServerAddressesLimit -int 0 2>/dev/null
-defaults delete com.apple.recentitems 2>/dev/null
-# лимит «Недавние объекты: Нет» — пишем и plist-ключами, как это делает сама macOS
-defaults write com.apple.recentitems RecentApplications -dict MaxAmount 0 2>/dev/null
-defaults write com.apple.recentitems RecentDocuments -dict MaxAmount 0 2>/dev/null
-defaults write com.apple.recentitems RecentServers -dict MaxAmount 0 2>/dev/null
-# сами списки: атомарно уводим ВСЮ папку в сторону и гасим демона ПОСЛЕ переименования.
-# ВАЖНО: раньше здесь был killall + rm отдельных .sfl2 — launchd поднимал демона
-# посреди удаления, файл оставался обрезанным, демон уходил в цикл крашей и
-# вешал меню системы (SystemUIServer). Полное переименование папки гонки не дает:
-# демон при следующем старте создает папку пустой.
-SFL_DIR="$HOME/Library/Application Support/com.apple.sharedfilelist"
-if [ -d "$SFL_DIR" ]; then
-    rm -rf "$SFL_DIR.old" 2>/dev/null
-    mv "$SFL_DIR" "$SFL_DIR.old" 2>/dev/null
-fi
-killall sharedfilelistd 2>/dev/null
-sleep 1
-killall Dock 2>/dev/null
-killall Finder 2>/dev/null
-killall SystemUIServer 2>/dev/null
-# честная проверка: папки нет / пустая — списков не осталось
-if [ ! -d "$SFL_DIR" ] || [ -z "$(ls -A "$SFL_DIR" 2>/dev/null)" ]; then
-    ok "$(L 'Recents выключен ВЕЗДЕ: секция в Dock скрыта, списки «Недавние объекты» стерты (папка уведена целиком), новые записи не собираются (лимиты = 0).' 'Recents is off everywhere: Dock section hidden, Recent Items wiped (folder moved aside whole), no new entries collected (limits = 0).')"
-else
-    warn "$(L 'Списки «Недавние объекты» стерты не до конца — перезагрузи Mac (перезагрузка есть в конце скрипта), меню очистится полностью.' 'Recent Items lists were not fully wiped — reboot the Mac (the script reboots at the end) to fully clear the menu.')"
-    REC_MANUAL=1
-fi
+# Recents («Недавние») УМЫШЛЕННО НЕ ТРОГАЕМ. Любое вмешательство в списки
+# недавних (лимиты, стирание .sfl2, перезапуск sharedfilelistd) на этой
+# машине вешало меню системы (SystemUIServer) — фича снята решением владельца.
 
 # Геолокация выключить
 as_root defaults write /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled -bool false 2>/dev/null
@@ -1849,119 +1812,13 @@ else
         warn "Tukan: папка не найдена. Запусти Tukan один раз и перезапусти скрипт."
     fi
 
-    # --- 3) ПОЛЬЗОВАТЕЛЬСКИЕ ПАПКИ: Рабочий стол, Документы, Загрузки ---
-    # Главное правило схемы: в системе не остается НИ ОДНОГО файла, включая
-    # «просто скриншот на столе». Содержимое этих трёх папок переезжает на
-    # секретный диск, а сами папки становятся симлинками на диск: Finder и
-    # диалоги сохранения работают как обычно, но файлы физически пишутся
-    # сразу на диск. Без диска папки «пустые» — так и задумано.
-    # Ненулевой код выхода не роняет скрипт: файлы остаются в системе, об
-    # этом честно скажет ПРОВЕРИТЬ.command.
-    ensure_user_dir() {
-        local src="$1" dstname="$2" label="$3"
-        local dst="$DATA/$dstname"
-        if [ -L "$src" ]; then
-            ok "$label — $(L 'уже симлинк на диск, пропускаю.' 'already a symlink to the disk, skipping.')"
-            return 0
-        fi
-        mkdir -p "$(dirname "$dst")"
-        # Пустоту папки определяем ТОЛЬКО если её удалось прочитать: без
-        # «Полного доступа к диску» чтение Desktop/Documents/Downloads молча
-        # проваливается, и папку нельзя считать пустой — иначе удалили бы
-        # непрочитанные файлы.
-        local src_cnt=0 unreadable=0
-        if [ -d "$src" ]; then
-            if ls -A "$src" >/dev/null 2>&1; then
-                src_cnt=$(find "$src" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
-            else
-                unreadable=1
-            fi
-        fi
-        if [ "$unreadable" = "1" ]; then
-            err "$label — $(L 'не смог прочитать папку (macOS не дала), ничего не трогаю.' 'could not read the folder (macOS refused), leaving it untouched.')"
-            dim "$(L 'Дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), перезапусти Терминал и запусти скрипт еще раз.' 'Grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), restart Terminal and run the script again.')"
-            return 1
-        fi
-        if [ "$src_cnt" -gt 0 ]; then
-            local dst_cnt=0
-            [ -d "$dst" ] && dst_cnt=$(find "$dst" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
-            if [ "$dst_cnt" -lt "$src_cnt" ]; then
-                mkdir -p "$dst"
-                cp -Rp "$src/." "$dst/" 2>/dev/null
-                local rc=$?
-                dst_cnt=$(find "$dst" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
-                if [ $rc -ne 0 ] || [ -z "$dst_cnt" ] || [ "$dst_cnt" -lt "$src_cnt" ]; then
-                    err "$label — $(L 'перенос не удался, оригиналы ОСТАЛИСЬ в системе.' 'move failed, originals are KEPT in the system.')"
-                    dim "$(L 'Либо дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), либо на диске кончилось место. Перезапусти Терминал и запусти скрипт еще раз.' 'Either grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), or the disk is out of space. Restart Terminal and run the script again.')"
-                    return 1
-                fi
-            fi
-        fi
-        mkdir -p "$dst" 2>/dev/null
-        # ЗАМЕНА ПАПКИ СИМЛИНКОМ. Раньше было rm -rf + ln -s, и между rm и ln
-        # Finder/iCloud успевали пересоздать папку: ln падал («File exists»),
-        # и скрипт после УДАЧНОГО переноса писал «симлинк НЕ создан», а папка
-        # оставалась в системе. Теперь: гасим Finder, ПЕРЕИМЕНОВЫВАЕМ папку в
-        # сторону, ставим симлинк, запускаем Finder. Оригинал стираю только
-        # ПОСЛЕ удачного симлинка; если не стерся — скажу имя оставшейся папки.
-        osascript -e 'quit app "Finder"' 2>/dev/null
-        sleep 1
-        local old="$src.autosetup-old" swapped=0
-        rm -rf "$old" 2>/dev/null
-        if mv "$src" "$old" 2>/dev/null; then
-            if ln -s "$dst" "$src" 2>/dev/null; then
-                swapped=1
-            else
-                # папку кто-то успел пересоздать — убираю пустышку и возвращаю оригинал
-                rm -rf "$src" 2>/dev/null
-                mv "$old" "$src" 2>/dev/null
-            fi
-        fi
-        open -a Finder 2>/dev/null
-        if [ "$swapped" = "1" ]; then
-            if [ "$src_cnt" -gt 0 ]; then
-                ok "$label — $(L 'перенесено объектов:' 'items moved:') $src_cnt → $(L 'на секретный диск, в системе остался симлинк.' 'to the secret disk, a symlink left in the system.')"
-            else
-                ok "$label — $(L 'папка была пуста, подключена с диска симлинком.' 'folder was empty, linked from the disk with a symlink.')"
-            fi
-            rm -rf "$old" 2>/dev/null
-            [ -e "$old" ] && warn "$label — $(L 'оригинал не стерся: в ~ осталась папка' 'original did not wipe: the folder left in ~') «$(basename "$old")» — $(L 'удали её руками (данные уже на диске).' 'delete it by hand (data is already on the disk).')"
-            return 0
-        else
-            err "$label — $(L 'симлинк НЕ создан (папка осталась в системе).' 'symlink NOT created (folder left in the system).')"
-            return 1
-        fi
-    }
+    # --- 3) ПОЛЬЗОВАТЕЛЬСКИЕ ПАПКИ (Рабочий стол/Документы/Загрузки) ---
+    # ФИЧА СНЯТА решением владельца: подмена этих папок симлинками на диск
+    # ломала Finder. Папки остаются в системе как есть. Данные приложений
+    # (Telegram, Sphere, Safari и т.д.) подключаются как раньше — это не тронуто.
 
     echo ""
-    info "$(L 'Пользовательские папки: Рабочий стол, Документы, Загрузки — тоже на секретный диск.' 'User folders: Desktop, Documents, Downloads — onto the secret disk too.')"
-    DO_UF="да"
-    if [ "$AUTO_LINK" != "да" ]; then
-        read -r -p "   $(L 'Перенести их содержимое на диск и заменить папки симлинками? (да/нет) [да]' 'Move their contents to the disk and replace the folders with symlinks? (yes/no) [yes]'): " UF
-        DO_UF=$(yn "${UF:-да}")
-    fi
-    if [ "$DO_UF" = "да" ]; then
-        # iCloud-синхронизация «Рабочий стол и папки Документов» (FileProvider)
-        # сама пересоздает эти папки и тянет их содержимое в облако — симлинки
-        # будут срываться, а Finder после подмены папок может упасть. Отключена?
-        if [ "$(defaults read com.apple.finder FXICloudDriveDesktop 2>/dev/null)" = "1" ] \
-            || [ "$(defaults read com.apple.finder FXICloudDriveDocuments 2>/dev/null)" = "1" ]; then
-            err "$(L 'iCloud синхронизирует Рабочий стол/Документы — папки на диск НЕ подключаю.' 'iCloud syncs Desktop/Documents — NOT linking these folders to the disk.')"
-            dim "$(L 'Сначала выключи: Настройки -> [твоё имя] -> iCloud -> Диск iCloud -> синхронизацию «Рабочий стол и папки Документов». Потом запусти скрипт еще раз.' 'First turn it off: Settings -> [your name] -> iCloud -> iCloud Drive -> «Desktop & Documents Folders» sync. Then re-run the script.')"
-            UF_ICLOUD=1
-        else
-            dim "$(L 'macOS может спросить «Терминалу нужен доступ к папке...» — нажми «Разрешить».' 'macOS may ask "Terminal would like to access files in..." — click "Allow".')"
-            ensure_user_dir "$HOME/Desktop"   "Desktop"   "$(L 'Рабочий стол' 'Desktop')"
-            ensure_user_dir "$HOME/Documents" "Documents" "$(L 'Документы' 'Documents')"
-            # Установщики из ~/Downloads/autosetup уже отработали — их сотни мегабайт
-            # незачем катать на шифрованный диск (в конце они все равно стираются).
-            [ -d "$DL" ] && rm -rf "$DL" 2>/dev/null
-            ensure_user_dir "$HOME/Downloads" "Downloads" "$(L 'Загрузки' 'Downloads')"
-            dim "$(L 'Всё, что теперь сохраняешь в эти папки, сразу попадает на диск. Без диска они пустые — так и задумано.' 'Everything saved into these folders now goes straight to the disk. Without the disk they are empty — by design.')"
-        fi
-    else
-        warn "$(L 'Пользовательские папки остались в системе — файлы в них видны и без диска, ПРОВЕРИТЬ будет ругаться.' 'User folders stayed in the system — files in them are visible without the disk, ПРОВЕРИТЬ will complain.')"
-    fi
+    dim "$(L 'Пользовательские папки (Рабочий стол, Документы, Загрузки) НЕ переношу — остаются в системе как есть.' 'User folders (Desktop, Documents, Downloads) are NOT moved — they stay in the system as is.')"
 fi
 
 # ------------------------------------------------------------
@@ -2085,8 +1942,6 @@ dim "Второй пароль стирает всё при вводе — ни�
       "Settings -> Bluetooth -> turn it off (I could not from the terminal)."
 [ "$FW_MANUAL" = "1" ] && mitem "Настройки -> Сеть -> Брандмауэр: тумблер ВКЛ, затем Параметры -> «Включить режим невидимости»." \
       "Settings -> Network -> Firewall: toggle ON, then Options -> «Enable stealth mode»."
-[ "$UF_ICLOUD" = "1" ] && mitem "Выключи iCloud-синхронизацию «Рабочий стол и папки Документов» (Настройки -> [твоё имя] -> iCloud -> Диск iCloud), затем запусти скрипт еще раз — он подключит эти папки к диску." \
-      "Turn off iCloud «Desktop & Documents Folders» sync (Settings -> [your name] -> iCloud -> iCloud Drive), then re-run the script — it will link those folders to the disk."
 [ "$SL_MANUAL" = "1" ] && mitem "Настройки -> Экран блокировки -> «Запрашивать пароль после заставки» = СРАЗУ." \
       "Settings -> Lock Screen -> «Require password after screen saver begins» = IMMEDIATELY."
 [ "$KB_LAYOUT_MANUAL" = "1" ] && mitem "Настройки -> Клавиатура -> Источники ввода -> + -> Русская." \
@@ -2120,8 +1975,6 @@ if [ "$TCC_BLOCK" = "1" ] || [ "$FDA_MISSING" = "1" ]; then
 fi
 [ "$TZ_MANUAL" = "1" ] && mitem "Часовой пояс не применился: Настройки -> Основные -> Дата и время -> часовой пояс $VPN_TZ (автоопределение — выкл)." \
       "Time zone did not apply: Settings -> General -> Date & Time -> zone $VPN_TZ (auto — off)."
-[ "$REC_MANUAL" = "1" ] && mitem "«Недавние объекты»: после перезагрузки открой меню  -> «Недавние объекты» и убедись, что оно пустое." \
-      "Recent Items: after the reboot open  -> «Recent Items» and make sure it is empty."
 [ $MN -eq 0 ] && ok "Ручных пунктов нет — все сделано скриптом."
 echo ""
 echo -e "  ${BOLD}ГЛАВНОЕ ПРАВИЛО:${NC} ничего не храни в системе Mac и на Рабочем столе —"
