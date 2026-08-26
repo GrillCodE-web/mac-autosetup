@@ -8,11 +8,9 @@
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
-LOG="/tmp/autosetup_log.txt"
-DLOG="/tmp/autosetup_commands.txt"
-: > "$LOG"
-echo "=== ДЕТАЛЬНЫЙ ЛОГ КОМАНД, запуск: $(date) ===" > "$DLOG"
-exec > >(tee >(sed -l $'s/\x1b\\[[0-9;]*m//g' >> "$LOG")) 2>&1
+# Логи НЕ ведутся принципиально: любой файл с историей настройки — это след,
+# который потом восстанавливается с диска. Все видно только на экране.
+rm -f /tmp/autosetup_log.txt /tmp/autosetup_commands.txt 2>/dev/null
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -51,18 +49,10 @@ yn() {
     esac
 }
 
-logcmd() {
-    local a line=""
-    for a in "$@"; do
-        [ -n "$ADMIN_PASS" ] && [ "$a" = "$ADMIN_PASS" ] && a="<пароль>"
-        [ -n "$DISK_PASS" ] && [ "$a" = "$DISK_PASS" ] && a="<пароль>"
-        [ -n "$USER_PASS" ] && [ "$a" = "$USER_PASS" ] && a="<пароль>"
-        line="$line $a"
-    done
-    echo "[$(date '+%H:%M:%S')] \$$line" >> "$DLOG"
-}
-run() { logcmd "$@"; "$@"; local rc=$?; [ $rc -ne 0 ] && echo "    ^ код возврата: $rc" >> "$DLOG"; return $rc; }
-as_root() { logcmd sudo "$@"; printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; local rc=$?; [ $rc -ne 0 ] && echo "    ^ код возврата: $rc" >> "$DLOG"; return $rc; }
+# Ничего никуда не пишем — заглушка оставлена, чтобы не менять вызовы по всему скрипту
+logcmd() { :; }
+run() { "$@"; }
+as_root() { printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; }
 
 step() {
     local t="$1"
@@ -70,7 +60,6 @@ step() {
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}${CYAN}▎${NC}${BOLD} $t${NC}"
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-    { echo ""; echo "########## $t ##########"; } >> "$DLOG"
 }
 
 ask() {
@@ -103,7 +92,7 @@ echo -e "${CYAN}═════════════════════�
 echo ""
 info "$(L 'Скрипт настроит этот Mac сам — просто следуй экрану.' 'The script sets this Mac up on its own — just follow the screen.')"
 info "$(L 'Сначала несколько вопросов, потом всё идет без тебя.' 'A few questions first, then it runs unattended.')"
-dim "$(L 'лог' 'log'): $LOG"
+dim "$(L 'Логи не ведутся — никаких следов в системе не остается.' 'No logs are written — no traces left in the system.')"
 
 # ------------------------------------------------------------
 # ВОПРОСЫ В НАЧАЛЕ (чтобы потом не отвлекать)
@@ -583,7 +572,6 @@ net_ok() {
 wait_for_internet() {
     if net_ok; then return 0; fi
     warn "Интернета НЕТ. Подключи кабель (Wi-Fi отключен) — жду и проверяю каждые 5 секунд..."
-    echo "[$(date '+%H:%M:%S')] нет интернета, жду подключения" >> "$DLOG"
     local n=0
     while ! net_ok; do
         sleep 5
@@ -591,7 +579,6 @@ wait_for_internet() {
         [ $((n % 6)) -eq 0 ] && echo "   ...все еще нет интернета ($((n * 5)) сек), жду."
     done
     ok "Интернет появился — продолжаю."
-    echo "[$(date '+%H:%M:%S')] интернет появился" >> "$DLOG"
 }
 
 app_installed() {
@@ -612,7 +599,6 @@ install_dmg() {
     local url="$1" appname="$2" fname="$3"
     if app_installed "$appname"; then
         ok "$appname уже установлен — пропускаю."
-        echo "[$(date '+%H:%M:%S')] $appname уже установлен, пропуск" >> "$DLOG"
         return 0
     fi
     [ -z "$fname" ] && fname=$(basename "$url")
@@ -1318,9 +1304,6 @@ echo "  5. Подключи диск обратно (пункт 2) — чаты 
 echo "  6. Настройки -> Сеть: Wi-Fi в списке быть не должно.  /  Settings -> Network: no Wi-Fi."
 echo "  7. Если бэкап Telegram был на обычной флешке — УДАЛИ его с неё (это полный доступ к телеге)."
 echo "     If the Telegram backup was on a normal flash drive — DELETE it there (it is full access)."
-echo ""
-ok "Технический лог (на всякий случай): $LOG"
-ok "Детальный лог всех команд (что и когда выполнялось): $DLOG"
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
 echo -e "   ${GREEN}${BOLD}НАСТРОЙКА ЗАВЕРШЕНА. Можно закрыть окно.${NC}"
