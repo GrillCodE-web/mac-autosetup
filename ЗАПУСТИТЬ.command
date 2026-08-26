@@ -18,12 +18,17 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
-warn() { echo -e "${YELLOW}[!]${NC} $1"; }
-err()  { echo -e "${RED}[$(L 'ОШИБКА' 'ERROR')]${NC} $1"; }
+ok()   { echo -e "  ${GREEN}${BOLD}✔${NC}  $1"; }
+warn() { echo -e "  ${YELLOW}${BOLD}▲${NC}  $1"; }
+err()  { echo -e "  ${RED}${BOLD}✖${NC}  $1"; }
+info() { echo -e "  ${BLUE}${BOLD}•${NC}  $1"; }
+dim()  { echo -e "     ${GREY}$1${NC}"; }
+hr()   { echo -e "${GREY}   ────────────────────────────────────────────────────────${NC}"; }
 
 # Двуязычный вывод: L "русский" "english" -> печатает СРАЗУ оба языка (дублирует)
 L() { printf '%s / %s' "$1" "$2"; }
@@ -50,16 +55,22 @@ run() { logcmd "$@"; "$@"; local rc=$?; [ $rc -ne 0 ] && echo "    ^ код во
 as_root() { logcmd sudo "$@"; printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; local rc=$?; [ $rc -ne 0 ] && echo "    ^ код возврата: $rc" >> "$DLOG"; return $rc; }
 
 step() {
+    local t="$1"
     echo ""
-    echo -e "${CYAN}============================================================${NC}"
-    echo -e "${BOLD}  $1${NC}"
-    echo -e "${CYAN}============================================================${NC}"
-    { echo ""; echo "########## $1 ##########"; } >> "$DLOG"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}${CYAN}▎${NC}${BOLD} $t${NC}"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    { echo ""; echo "########## $t ##########"; } >> "$DLOG"
+}
+
+ask() {
+    echo ""
+    echo -e "${BOLD}${YELLOW}?${NC} ${BOLD}$1${NC}"
 }
 
 pause() {
     echo ""
-    echo -e "${YELLOW}>>> $(L 'Когда сделаешь — нажми Enter' 'When done — press Enter') <<<${NC}"
+    echo -e "${YELLOW}${BOLD}⏎${NC}  $(L 'Когда сделаешь — нажми Enter' 'When done — press Enter')"
     read -r
 }
 
@@ -75,11 +86,14 @@ chmod +x "$SCRIPT_DIR/ПРОВЕРИТЬ.command" 2>/dev/null
 
 clear
 
-step "$(L 'НАЧАЛО НАСТРОЙКИ' 'SETUP START')"
-echo "$(L 'Сейчас скрипт настроит этот Mac полностью сам.' 'This script will set up this Mac automatically.')"
-echo "$(L 'От тебя нужно минимум действий — просто следуй экрану.' 'Minimal input needed — just follow the screen.')"
-echo "$(L 'Весь ход записывается в файл:' 'Full log is written to:') $LOG"
 echo ""
+echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+echo -e "   ${BOLD}АВТОНАСТРОЙКА И ЗАЩИТА MAC  /  MAC SETUP & HARDENING${NC}"
+echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+echo ""
+info "$(L 'Скрипт настроит этот Mac сам — просто следуй экрану.' 'The script sets this Mac up on its own — just follow the screen.')"
+info "$(L 'Сначала несколько вопросов, потом всё идет без тебя.' 'A few questions first, then it runs unattended.')"
+dim "$(L 'лог' 'log'): $LOG"
 
 # ------------------------------------------------------------
 # ВОПРОСЫ В НАЧАЛЕ (чтобы потом не отвлекать)
@@ -308,16 +322,50 @@ else
 fi
 
 # Раскладки клавиатуры: английская (уже есть) + русская, и сочетание переключения
-KB_PLIST="$HOME/Library/Preferences/com.apple.HIToolbox.plist"
-US_SRC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>0</integer><key>KeyboardLayout Name</key><string>U.S.</string></dict>'
-RU_SRC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>19456</integer><key>KeyboardLayout Name</key><string>Russian</string></dict>'
-defaults write com.apple.HIToolbox AppleEnabledInputSources -array "$US_SRC" "$RU_SRC" 2>/dev/null
-defaults write com.apple.HIToolbox AppleInputSourceHistory -array "$US_SRC" "$RU_SRC" 2>/dev/null
-defaults write com.apple.HIToolbox AppleSelectedInputSources -array "$US_SRC" "$RU_SRC" 2>/dev/null
-if [ -f "$KB_PLIST" ]; then
-    ok "$(L 'Раскладки: английская (U.S.) + русская (применятся после перезагрузки).' 'Layouts: English (U.S.) + Russian (applied after reboot).')"
+# Пишем через defaults export -> PlistBuddy -> defaults import: прямая правка
+# файла бесполезна (cfprefsd держит настройки в памяти и перезатрет их).
+add_layout() {
+    local key="$1" name="$2" id="$3"
+    local tmp="/tmp/hitoolbox_$$.plist" n
+    defaults export com.apple.HIToolbox "$tmp" 2>/dev/null || return 1
+    if /usr/libexec/PlistBuddy -c "Print :$key" "$tmp" 2>/dev/null | grep -q "KeyboardLayout Name = $name$"; then
+        rm -f "$tmp"; return 0
+    fi
+    /usr/libexec/PlistBuddy -c "Add :$key array" "$tmp" 2>/dev/null
+    n=$(/usr/libexec/PlistBuddy -c "Print :$key" "$tmp" 2>/dev/null | grep -c "Dict {")
+    /usr/libexec/PlistBuddy -c "Add :$key:$n dict" "$tmp" 2>/dev/null
+    /usr/libexec/PlistBuddy -c "Add :$key:$n:InputSourceKind string 'Keyboard Layout'" "$tmp" 2>/dev/null
+    /usr/libexec/PlistBuddy -c "Add :$key:$n:'KeyboardLayout ID' integer $id" "$tmp" 2>/dev/null
+    /usr/libexec/PlistBuddy -c "Add :$key:$n:'KeyboardLayout Name' string '$name'" "$tmp" 2>/dev/null
+    logcmd defaults import com.apple.HIToolbox "(+$name)"
+    defaults import com.apple.HIToolbox "$tmp" 2>/dev/null
+    rm -f "$tmp"
+}
+
+add_layout AppleEnabledInputSources "U.S." 0
+add_layout AppleEnabledInputSources "Russian" 19456
+add_layout AppleInputSourceHistory "Russian" 19456
+if defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q "Russian"; then
+    ok "$(L 'Раскладки: английская (U.S.) + русская — обе на месте.' 'Layouts: English (U.S.) + Russian — both present.')"
+    KB_ADDED=1
 else
-    warn "$(L 'Не смог записать раскладки — добавь русскую руками: Настройки -> Клавиатура -> Источники ввода.' 'Could not set layouts — add Russian manually: Settings -> Keyboard -> Input Sources.')"
+    warn "$(L 'macOS не принял раскладку из терминала. Открою настройки — добавь русскую сам, я подожду.' 'macOS refused the layout from the terminal. Opening settings — add Russian yourself, I will wait.')"
+    open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null
+    KB_TRY=0
+    while [ $KB_TRY -lt 40 ]; do
+        sleep 3
+        KB_TRY=$((KB_TRY + 1))
+        if defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q "Russian"; then
+            KB_ADDED=1; break
+        fi
+        [ $((KB_TRY % 10)) -eq 0 ] && dim "$(L 'жду русскую раскладку...' 'waiting for the Russian layout...')"
+    done
+    if [ "$KB_ADDED" = "1" ]; then
+        ok "$(L 'Русская раскладка появилась.' 'Russian layout is now present.')"
+    else
+        err "$(L 'Русской раскладки так и нет — добавь: Настройки -> Клавиатура -> Источники ввода -> +.' 'Russian layout is still missing — add it: Settings -> Keyboard -> Input Sources -> +.')"
+        KB_LAYOUT_MANUAL=1
+    fi
 fi
 
 # Сочетание переключения раскладки (AppleSymbolicHotKeys: 60 — предыдущий источник, 61 — следующий)
@@ -443,10 +491,66 @@ if [ -n "$VPN_TZ" ]; then
     as_root systemsetup -settimezone "$VPN_TZ" &>/dev/null && ok "$(L 'Часовой пояс:' 'Time zone:') $VPN_TZ ($(L 'автоопределение в macOS отключено' 'macOS auto time zone disabled'))" || warn "$(L 'Не смог поставить часовой пояс' 'Could not set time zone') $VPN_TZ"
 fi
 
-# Bluetooth: глушим (второй канал утечки после Wi-Fi)
-as_root defaults write /Library/Preferences/com.apple.Bluetooth.plist ControllerPowerState -int 0 2>/dev/null
-as_root pkill bluetoothd 2>/dev/null
-ok "Bluetooth выключен (окончательно отключится после перезагрузки — в конце проверим вручную)."
+# Bluetooth: глушим (второй канал утечки после Wi-Fi).
+# На свежих macOS одного defaults мало — сервис надо ПЕРЕЗАПУСТИТЬ и проверить реальное состояние.
+bt_is_on() {
+    local s
+    s=$(system_profiler SPBluetoothDataType 2>/dev/null | grep -i -m1 "State:")
+    case "$s" in
+        *[Oo]ff*) return 1 ;;
+        *[Oo]n*)  return 0 ;;
+    esac
+    s=$(defaults read /Library/Preferences/com.apple.Bluetooth ControllerPowerState 2>/dev/null)
+    [ "$s" = "0" ] && return 1
+    return 0
+}
+
+bt_off() {
+    as_root defaults write /Library/Preferences/com.apple.Bluetooth ControllerPowerState -int 0 2>/dev/null
+    as_root defaults write /Library/Preferences/com.apple.Bluetooth.plist ControllerPowerState -int 0 2>/dev/null
+    as_root launchctl kickstart -k system/com.apple.bluetoothd 2>/dev/null \
+        || as_root killall -9 bluetoothd 2>/dev/null
+    sleep 3
+}
+
+info "$(L 'Выключаю Bluetooth...' 'Turning Bluetooth off...')"
+bt_off
+if bt_is_on; then
+    bt_off
+fi
+if bt_is_on; then
+    warn "$(L 'macOS не дает выключить Bluetooth из терминала (так на свежих версиях).' 'macOS refuses to turn Bluetooth off from the terminal (common on recent versions).')"
+    info "$(L 'Открываю настройки Bluetooth — переключи тумблер в ВЫКЛ, я подожду и проверю сам.' 'Opening Bluetooth settings — flip the switch OFF, I will wait and verify.')"
+    open "x-apple.systempreferences:com.apple.BluetoothSettings" 2>/dev/null || open -b com.apple.systempreferences 2>/dev/null
+    BT_TRY=0
+    while bt_is_on && [ $BT_TRY -lt 60 ]; do
+        sleep 3
+        BT_TRY=$((BT_TRY + 1))
+        [ $((BT_TRY % 10)) -eq 0 ] && dim "$(L 'жду, Bluetooth все еще включен...' 'waiting, Bluetooth is still on...')"
+    done
+    if bt_is_on; then
+        err "$(L 'Bluetooth так и остался ВКЛЮЧЕН — выключи его вручную (добавил в список доделок).' 'Bluetooth is still ON — turn it off manually (added to the manual list).')"
+        BT_MANUAL=1
+    else
+        ok "$(L 'Bluetooth выключен — вижу это в системе.' 'Bluetooth is off — confirmed by the system.')"
+    fi
+else
+    ok "$(L 'Bluetooth выключен — вижу это в системе.' 'Bluetooth is off — confirmed by the system.')"
+fi
+
+# Пароль сразу после заставки/сна экрана — раньше это был ручной пункт
+logcmd sysadminctl -screenLock immediate -password '<пароль>'
+SL_OUT=$(sysadminctl -screenLock immediate -password "$ADMIN_PASS" 2>&1)
+SL_NOW=$(sysadminctl -screenLock status 2>&1)
+if echo "$SL_NOW" | grep -qi "immediate"; then
+    ok "$(L 'Пароль запрашивается СРАЗУ после заставки/сна экрана.' 'Password is required IMMEDIATELY after screen saver / display sleep.')"
+elif ! echo "$SL_OUT" | grep -qi "error\|usage"; then
+    ok "$(L 'Пароль сразу после заставки — команда принята (проверю в ПРОВЕРИТЬ.command).' 'Immediate password after screen saver — command accepted (verify with ПРОВЕРИТЬ.command).')"
+else
+    osascript -e 'tell application "System Events" to set require password to wake of security preferences to true' 2>/dev/null \
+        && ok "$(L 'Пароль после заставки включен (через System Events).' 'Password after screen saver enabled (via System Events).')" \
+        || { warn "$(L 'Не смог включить «пароль сразу после заставки» — добавил в список доделок.' 'Could not enable «require password immediately» — added to the manual list.')"; SL_MANUAL=1; }
+fi
 
 echo ""
 warn "Дальше скрипт сам: поставит программы, включит FileVault (ты только перепишешь ключ),"
@@ -527,6 +631,8 @@ install_dmg() {
         local tapp
         tapp=$(find "$DL/untar_$appname" -maxdepth 2 -name "*.app" | head -1)
         if [ -n "$tapp" ]; then
+            # Старую копию сносим целиком, иначе macOS плодит «MailMate 2.app» и т.п.
+            as_root rm -rf "/Applications/$(basename "$tapp")" 2>/dev/null
             as_root cp -R "$tapp" /Applications/ 2>/dev/null
             as_root xattr -dr com.apple.quarantine "/Applications/$(basename "$tapp")" 2>/dev/null
             ok "$appname установлен."
@@ -649,6 +755,21 @@ if [ "$INSTALL_QTOX" = "да" ]; then
     fi
 fi
 
+# Дубли в /Applications («MailMate 2.app», «Telegram копия.app» и т.п.) — убираем,
+# иначе человек открывает не ту копию и не понимает, почему данные пустые.
+dedupe_app() {
+    local base="$1" keep="/Applications/$1.app" d
+    [ -d "$keep" ] || return 0
+    while IFS= read -r d; do
+        [ "$d" = "$keep" ] && continue
+        echo ""
+        warn "$(L 'Нашел лишнюю копию программы:' 'Found a duplicate copy of the app:') $d"
+        read -r -p "   $(L 'Удалить ее (оставлю' 'Delete it (keeping') $keep)? (да/нет) [да]: " DUPOK < /dev/tty
+        [ "$(yn "${DUPOK:-да}")" = "да" ] && { as_root rm -rf "$d" && ok "$(L 'Удалено:' 'Deleted:') $d"; }
+    done < <(find /Applications -maxdepth 1 -iname "$base*.app" 2>/dev/null)
+}
+for A in "MailMate" "Telegram" "VeraCrypt" "qTox" "Sublime Text"; do dedupe_app "$A"; done
+
 # ------------------------------------------------------------
 # ФАЗА 4: FILEVAULT
 # ------------------------------------------------------------
@@ -696,8 +817,58 @@ wait_new_disk() {
     return 1
 }
 
+# Кандидаты на «секретный диск»: все тома, кроме системных.
+# Нужно потому, что VeraCrypt --list не всегда отвечает (другая версия, другой ПК,
+# диск смонтирован не через CLI) — тогда просто смотрим, что реально есть в /Volumes.
+list_candidate_vols() {
+    local v boot
+    boot=$(basename "$(df / 2>/dev/null | tail -1 | awk '{for(i=9;i<=NF;i++) printf "%s ",$i}' | xargs)" 2>/dev/null)
+    for v in /Volumes/*; do
+        [ -d "$v" ] || continue
+        case "$(basename "$v")" in
+            "Macintosh HD"|"Data"|"Preboot"|"Recovery"|"VM"|"Update"|"xarts"|"iSCPreboot"|"Hardware"|"$boot") continue ;;
+        esac
+        [ -L "$v" ] && continue
+        echo "$v"
+    done
+}
+
 vc_mounted_vol() {
-    "$VC" --text --list 2>/dev/null | grep -o '/Volumes/.*' | head -1
+    local v out
+    out=$("$VC" --text --list 2>/dev/null | grep -o '/Volumes/.*' | head -1)
+    if [ -n "$out" ] && [ -d "$out" ]; then echo "$out"; return 0; fi
+    # Запасной путь: том, на котором уже лежат данные приложений
+    for v in $(list_candidate_vols); do
+        if [ -d "$v/DataAPP" ] || find "$v" -maxdepth 3 -type d \
+               \( -name "DataAPP" -o -name "6N38VWS5BX.ru.keepcoder.Telegram" -o -name "app.ls" -o -name "Tox" \) \
+               -not -path "*/.Trashes/*" 2>/dev/null | grep -q .; then
+            echo "$v"; return 0
+        fi
+    done
+    # Иначе — если внешний том ровно один, это он
+    local all cnt
+    all=$(list_candidate_vols)
+    cnt=$(echo "$all" | grep -c . )
+    if [ "$cnt" = "1" ]; then echo "$all"; return 0; fi
+    return 1
+}
+
+# Папка данных на диске: у каждого своя (DataAPP, Data, APPDATA...). Ищем что есть,
+# а если ничего нет — создаем DataAPP.
+resolve_data_dir() {
+    local vol="$1" found
+    found=$(find "$vol" -maxdepth 3 -type d \( -iname "DataAPP" -o -iname "AppData" -o -iname "APPDATA" \) \
+            -not -path "*/.Trashes/*" 2>/dev/null | head -1)
+    if [ -z "$found" ]; then
+        found=$(find "$vol" -maxdepth 4 -type d -name "6N38VWS5BX.ru.keepcoder.Telegram" \
+                -not -path "*/.Trashes/*" 2>/dev/null | head -1)
+        [ -n "$found" ] && found=$(dirname "$found")
+    fi
+    if [ -z "$found" ]; then
+        found="$vol/DataAPP"
+        mkdir -p "$found" 2>/dev/null
+    fi
+    echo "$found"
 }
 
 gui_mount_flow() {
@@ -726,8 +897,9 @@ gui_mount_flow() {
         SKIP_LINKS=1
     else
         VOL_NAME=$(basename "$MOUNTED_PATH")
-        ok "Диск подключен: /Volumes/$VOL_NAME"
-        DATA="/Volumes/$VOL_NAME/DataAPP"
+        ok "$(L 'Диск подключен:' 'Disk mounted:') /Volumes/$VOL_NAME"
+        DATA=$(resolve_data_dir "/Volumes/$VOL_NAME")
+        info "$(L 'Папка данных на диске:' 'Data folder on the disk:') $DATA"
         mkdir -p "$DATA"
         if [ ! -d "$DATA" ]; then
             err "Не смог создать папку на диске ($DATA) — диск только для чтения?"
@@ -841,8 +1013,9 @@ if [ "$SKIP_LINKS" = "0" ] && [ "$HAVE_DISK" != "да" ]; then
             [ -d "/Volumes/$DISK_NAME" ] && MOUNTED="$DISK_NAME"
         fi
         VOL_NAME="$MOUNTED"
-        ok "Диск подключен: /Volumes/$VOL_NAME"
-        DATA="/Volumes/$VOL_NAME/DataAPP"
+        ok "$(L 'Диск подключен:' 'Disk mounted:') /Volumes/$VOL_NAME"
+        DATA=$(resolve_data_dir "/Volumes/$VOL_NAME")
+        info "$(L 'Папка данных на диске:' 'Data folder on the disk:') $DATA"
         mkdir -p "$DATA"
     fi
 fi
@@ -878,11 +1051,13 @@ else
 
     # --- 0a) ГЛУБОКИЙ ПОИСК: данные могут лежать в ЛЮБОЙ подпапке диска, не только в DataAPP ---
     DISK_ROOT="/Volumes/$VOL_NAME"
+    # Без maxdepth: у каждого своя структура папок, данные могут быть закопаны глубоко
     deep_find() {
         logcmd find "$DISK_ROOT" -type d -iname "$1"
-        find "$DISK_ROOT" -maxdepth 8 -type d -iname "$1" \
+        find "$DISK_ROOT" -type d -iname "$1" \
             -not -path "$DATA/*" -not -path "*/.Trashes/*" \
-            -not -path "*/.Spotlight-V100/*" -not -path "*/.fseventsd/*" 2>/dev/null | head -1
+            -not -path "*/.Spotlight-V100/*" -not -path "*/.fseventsd/*" \
+            -not -path "*/.DocumentRevisions*" -not -path "*/.TemporaryItems/*" 2>/dev/null | head -1
     }
     # НИЧЕГО НЕ ПЕРЕНОСИМ: папки остаются там, где лежат на диске —
     # к ним просто делается симлинк из системы.
@@ -1051,31 +1226,34 @@ fi
 # ------------------------------------------------------------
 step "ГОТОВО"
 
-echo "Что осталось сделать РУКАМИ (2 минуты):"
-echo "What is left to do MANUALLY (2 minutes):"
+MN=0
+mitem() { MN=$((MN + 1)); echo -e "  ${YELLOW}${BOLD}$MN.${NC} $1"; echo "     $2"; }
+
+echo -e "${BOLD}Что осталось сделать РУКАМИ (автоматом это сделать нельзя):${NC}"
+echo -e "${GREY}What is left to do MANUALLY (cannot be automated):${NC}"
 echo ""
-echo "  1. Если Tukan не подключился — запусти его 1 раз, потом запусти этот скрипт еще раз."
-echo "     If Tukan is not linked — launch it once, then run this script again."
-echo "  2. Настройки -> Bluetooth -> должен быть ВЫКЛ (если включен — выключи)."
-echo "     Settings -> Bluetooth -> must be OFF (turn it off if it is on)."
-echo "  3. Настройки -> Экран блокировки -> «Запрашивать пароль после включения заставки» = СРАЗУ."
-echo "     Settings -> Lock Screen -> «Require password after screen saver begins» = IMMEDIATELY."
-echo "  4. TUKAN: задай ДВА пароля — один для входа, ВТОРОЙ на удаление данных (аварийный)."
-echo "     Второй пароль стирает всё при вводе — никому не говори и не проверяй ради интереса."
-echo "     TUKAN: set TWO passwords — one to log in, the SECOND one wipes the data (panic password)."
-echo "     The second password erases everything — never share it and never test it."
-echo "  5. Раскладки: Настройки -> Клавиатура -> Источники ввода — должны быть U.S. и Русская."
-echo "     Layouts: Settings -> Keyboard -> Input Sources — must list U.S. and Russian."
-if [ "$INSTALL_MM" = "да" ] || [ "$INSTALL_QTOX" = "да" ]; then
-    echo "  5a. MailMate / qTox: запусти каждую программу 1 раз при ПОДКЛЮЧЕННОМ диске —"
-    echo "      почта и профиль Tox создадутся сразу на диске (папки уже подключены симлинками)."
-    echo "      MailMate / qTox: launch each once WITH the disk mounted — mail and the Tox"
-    echo "      profile will be created straight on the disk (folders are already symlinked)."
+mitem "TUKAN: задай ДВА пароля — один для входа, ВТОРОЙ на удаление данных (аварийный)." \
+      "TUKAN: set TWO passwords — one to log in, the SECOND wipes all data (panic password)."
+dim "Второй пароль стирает всё при вводе — никому не говори и не проверяй ради интереса."
+[ ! -e "$TUKAN_DIR" ] && mitem "Tukan: запусти его 1 раз, потом запусти этот скрипт еще раз — подключу его данные." \
+      "Tukan: launch it once, then run this script again so I can link its data."
+[ "$BT_MANUAL" = "1" ] && mitem "Настройки -> Bluetooth -> выключи (я не смог из терминала)." \
+      "Settings -> Bluetooth -> turn it off (I could not from the terminal)."
+[ "$SL_MANUAL" = "1" ] && mitem "Настройки -> Экран блокировки -> «Запрашивать пароль после заставки» = СРАЗУ." \
+      "Settings -> Lock Screen -> «Require password after screen saver begins» = IMMEDIATELY."
+[ "$KB_LAYOUT_MANUAL" = "1" ] && mitem "Настройки -> Клавиатура -> Источники ввода -> + -> Русская." \
+      "Settings -> Keyboard -> Input Sources -> + -> Russian."
+[ "$KB_MANUAL" = "1" ] && mitem "Там же: галочка «Использовать Caps Lock для переключения раскладки»." \
+      "Same place: tick «Use Caps Lock key to switch input source»."
+if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ]; then
+    mitem "MailMate: запусти при ПОДКЛЮЧЕННОМ диске и введи пароли почты один раз, галочка «запомнить»." \
+          "MailMate: launch it WITH the disk mounted and enter mail passwords once, tick «remember»."
+    dim "Пароли почты хранит Связка ключей macOS, а не папка на диске — поэтому после переезда"
+    dim "на другой Mac их спрашивают заново. Это нормально и по-другому не бывает."
 fi
-if [ "$KB_MANUAL" = "1" ]; then
-    echo "  6. Там же поставь галочку «Использовать Caps Lock для переключения раскладки»."
-    echo "     There, tick «Use Caps Lock key to switch input source»."
-fi
+[ "$INSTALL_QTOX" = "да" ] && mitem "qTox: запусти при ПОДКЛЮЧЕННОМ диске — профиль Tox создастся сразу на диске." \
+      "qTox: launch it WITH the disk mounted — the Tox profile is created straight on the disk."
+[ $MN -eq 0 ] && ok "Ручных пунктов нет — все сделано скриптом."
 echo ""
 echo -e "  ${BOLD}ГЛАВНОЕ ПРАВИЛО:${NC} ничего не храни в системе Mac и на Рабочем столе —"
 echo "  все файлы ТОЛЬКО на подключенном секретном диске. Что попало в систему,"
@@ -1116,4 +1294,7 @@ echo ""
 ok "Технический лог (на всякий случай): $LOG"
 ok "Детальный лог всех команд (что и когда выполнялось): $DLOG"
 echo ""
-echo -e "${GREEN}${BOLD}НАСТРОЙКА ЗАВЕРШЕНА. Можно закрыть окно.${NC}"
+echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
+echo -e "   ${GREEN}${BOLD}НАСТРОЙКА ЗАВЕРШЕНА. Можно закрыть окно.${NC}"
+echo -e "   ${GREY}SETUP COMPLETE. You can close this window.${NC}"
+echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
