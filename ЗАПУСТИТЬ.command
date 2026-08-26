@@ -622,14 +622,28 @@ SS_SESSION=0
 pgrep -x ScreensharingAgent >/dev/null 2>&1 && SS_SESSION=1
 as_root launchctl disable "system/com.apple.screensharing" 2>/dev/null
 as_root launchctl disable "system/com.apple.RemoteDesktop.agent" 2>/dev/null
-# SSH: systemsetup может спросить подтверждение, отвечаем «yes» прямо в stdin.
-# (Прежний запасной вариант «echo yes | as_root ...» не работал: as_root подменяет
-# stdin, и «yes» до systemsetup не доезжал.)
-printf '%s\nyes\n' "$ADMIN_PASS" | sudo -S systemsetup -setremotelogin off 2>/dev/null
+# SSH: сначала смотрим состояние. На чистой macOS он УЖЕ выключен из коробки —
+# тогда systemsetup не дёргаем вовсе (его вызов дважды переспрашивает
+# по-английски «точно выключить?» и сыплет служебный текст прямо в вывод).
+# Если включен — гасим молча («yes» уходит в stdin) и проверяем результат.
+if as_root systemsetup -getremotelogin 2>/dev/null | grep -qi "off"; then
+    ok "$(L 'Удалённый вход (SSH): уже был выключен.' 'Remote Login (SSH): already off.')"
+else
+    printf '%s\nyes\n' "$ADMIN_PASS" | sudo -S systemsetup -setremotelogin off >/dev/null 2>&1
+    if as_root systemsetup -getremotelogin 2>/dev/null | grep -qi "off"; then
+        ok "$(L 'Удалённый вход (SSH) выключен.' 'Remote Login (SSH) turned off.')"
+    else
+        warn "$(L 'Удалённый вход (SSH) не выключился из терминала — открою Общий доступ, выключи сам.' 'Remote Login (SSH) did not go off — opening Sharing, turn it off yourself.')"
+        open "x-apple.systempreferences:com.apple.Sharing-Settings.extension" 2>/dev/null
+        SS_MANUAL=1
+    fi
+fi
 if [ "$SS_SESSION" = "1" ]; then
     warn "$(L 'Сейчас идёт АКТИВНЫЙ сеанс Общего экрана/удалённого управления (ты, возможно, смотришь через него). Соединение НЕ рву: службы уже выключены насовсем и полностью отключатся при перезагрузке в конце.' 'A Screen Sharing / remote control session is ACTIVE (you may be watching through it). NOT dropping it: the services are disabled for good and fully turn off at the final reboot.')"
 else
-    as_root /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -deactivate -stop 2>/dev/null
+    # kickstart печатает «Starting... / Removed preference... / Done.» — глушим,
+    # своё сообщение об успехе печатаем сами.
+    as_root /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -deactivate -stop >/dev/null 2>&1
     as_root pkill -x screensharingd 2>/dev/null
     sleep 1
     if pgrep -x screensharingd >/dev/null 2>&1; then
@@ -637,7 +651,7 @@ else
         open "x-apple.systempreferences:com.apple.Sharing-Settings.extension" 2>/dev/null
         SS_MANUAL=1
     else
-        ok "$(L 'Общий экран, удалённое управление (ARD) и удалённый вход (SSH) выключены (насовсем).' 'Screen Sharing, Remote Management (ARD) and Remote Login (SSH) are off (for good).')"
+        ok "$(L 'Общий экран и удалённое управление (ARD) выключены (насовсем).' 'Screen Sharing and Remote Management (ARD) are off (for good).')"
     fi
 fi
 
@@ -1648,7 +1662,7 @@ if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ]; then
 fi
 [ "$INSTALL_QTOX" = "да" ] && mitem "qTox: запусти при ПОДКЛЮЧЕННОМ диске — профиль Tox создастся сразу на диске." \
       "qTox: launch it WITH the disk mounted — the Tox profile is created straight on the disk."
-[ "$SS_MANUAL" = "1" ] && mitem "Настройки -> Общий доступ -> выключи «Общий экран» и «Удалённое управление»." \
+[ "$SS_MANUAL" = "1" ] && mitem "Настройки -> Общий доступ -> выключи «Общий экран», «Удалённое управление» и «Удалённый вход» (SSH)." \
       "Settings -> Sharing -> turn off «Screen Sharing» and «Remote Management»."
 if [ "$INSTALL_EXCEL" = "да" ] || [ -d "/Applications/Microsoft Excel.app" ]; then
     mitem "Excel: открой один раз и войди в аккаунт Microsoft 365 — иначе работает как пробный." \
