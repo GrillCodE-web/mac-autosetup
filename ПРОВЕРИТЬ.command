@@ -243,6 +243,13 @@ if [ -n "$DATA_DIR" ]; then
     dim "папка данных: $DATA_DIR"
     FREE=$(df -h "$DISK_VOL" 2>/dev/null | tail -1 | awk '{print $4}')
     [ -n "$FREE" ] && dim "свободно на диске: $FREE"
+    # Том может подняться только на чтение или с чужими правами — тогда все
+    # приложения «работают», но МОЛЧА не могут сохранять данные. Проверяю
+    # записью и тут же стираю тестовый файл (следов не остаётся).
+    if ! { touch "$DATA_DIR/.rw-check" 2>/dev/null && rm -f "$DATA_DIR/.rw-check" 2>/dev/null; }; then
+        bad "Папка данных на диске НЕДОСТУПНА НА ЗАПИСЬ — Safari и остальные приложения не смогут сохранять данные!"
+        dim "Переподключи том VeraCrypt (проверь пароль/права) и запусти проверку снова."
+    fi
 else
     dunno "Секретный диск НЕ найден — проверки данных будут неполными."
     dim "Подключи его через VeraCrypt и запусти проверку снова."
@@ -251,23 +258,35 @@ else
 fi
 
 check_link() {
-    local src="$1" name="$2"
+    local src="$1" name="$2" absent_hint="$3"
     if [ -L "$src" ]; then
         local target=$(readlink "$src")
         case "$target" in
             /Volumes/*)
-                if [ -e "$src" ]; then
+                local vol="/Volumes/$(echo "$target" | cut -d/ -f3)"
+                if [ ! -d "$vol" ]; then
+                    dunno "$name — том $vol сейчас не подключен: симлинк не проверить (это норма без диска)."
+                    [ -n "$absent_hint" ] && dim "$absent_hint"
+                elif [ ! -d "$target" ]; then
+                    bad "$name — симлинк ВИСИТ В НИКУДА: $target не существует, а диск подключен. Запусти ЗАПУСТИТЬ.command."
+                else
+                    # Смотрим ПРЯМО на цель на диске: путь ~/Library/Safari закрыт
+                    # системой (TCC), и без «Полного доступа к диску» сквозь
+                    # симлинк не видно НИЧЕГО — раньше это печаталось как
+                    # «диск не подключен», хотя диск подключен. Читаем цель
+                    # напрямую — она вне защищенных папок и всегда читается.
                     local sz cnt
-                    cnt=$(ls -A "$src/" 2>/dev/null | wc -l | tr -d ' ')
-                    sz=$(du -sh "$src/" 2>/dev/null | awk '{print $1}')
+                    cnt=$(ls -A "$target/" 2>/dev/null | wc -l | tr -d ' ')
+                    sz=$(du -sh "$target/" 2>/dev/null | awk '{print $1}')
                     if [ "$cnt" = "0" ]; then
                         bad "$name — симлинк рабочий, но папка на диске ПУСТАЯ ($target)."
                     else
                         good "$name — данные на секретном диске (${sz:-?}, файлов: $cnt)."
                         dim "$target"
+                        if ! [ -e "$src" ]; then
+                            dim "внимание: через сам симлинк папка не читается — дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), иначе Safari может не увидеть свои данные."
+                        fi
                     fi
-                else
-                    dunno "$name — симлинк на диск есть, но диск сейчас не подключен (это норма без диска)."
                 fi ;;
             *)
                 bad "$name — симлинк ведет НЕ на внешний диск, а в: $target" ;;
@@ -275,16 +294,33 @@ check_link() {
     elif [ -d "$src" ]; then
         bad "$name — данные лежат В СИСТЕМЕ (не на диске)! Запусти ЗАПУСТИТЬ.command еще раз."
     else
-        dunno "$name — данных нет ни в системе, ни симлинка (приложение еще не запускалось?)."
+        case "$src" in
+            */Safari) dunno "$name — папка не видна: либо её нет, либо Терминалу не хватает «Полного доступа к диску» (система закрывает ~/Library/Safari). Дай доступ, перезапусти Терминал и проверь снова." ;;
+            *)        dunno "$name — данных нет ни в системе, ни симлинка (приложение еще не запускалось?)." ;;
+        esac
     fi
 }
 
 check_link "$(tg_local_dir)/stable" "Telegram"
 check_link "$HOME/Library/Application Support/Sublime Text" "Sublime Text"
 check_link "$HOME/Library/Application Support/app.ls" "Sphere"
-check_link "$HOME/Library/Safari" "Safari"
+# Safari при отключенном диске видит «пустые» данные. Если включена
+# синхронизация iCloud — он может решить, что закладки УДАЛЕНЫ, и затереть
+# ими облако (классическая потеря закладок после подмены папки). Поэтому
+# без диска Safari лучше вообще не открывать.
+SF_NO_DISK="Safari без диска лучше не открывать: он увидит «пустые» закладки, и iCloud-синхронизация может затереть закладки в облаке."
+check_link "$HOME/Library/Safari" "Safari" "$SF_NO_DISK"
+# Safari хранит данные в ДВУХ местах: профиль (~/Library/Safari — выше) и
+# контейнер ~/Library/Containers/com.apple.Safari (cookies, настройки, кэш,
+# история профилей). Проверяем ОБА — половинчатый перенос оставляет в
+# системе cookies и логины.
+if [ -L "$HOME/Library/Containers/com.apple.Safari" ] || [ -e "$HOME/Library/Containers/com.apple.Safari" ]; then
+    check_link "$HOME/Library/Containers/com.apple.Safari" "Safari — контейнер (cookies)" "$SF_NO_DISK"
+fi
 [ -d "/Applications/MailMate.app" ] && check_link "$HOME/Library/Application Support/MailMate" "MailMate"
 [ -d "/Applications/qTox.app" ] && check_link "$HOME/Library/Application Support/Tox" "qTox"
+# Joplin (если стоит/были данные): проверяем как остальные
+[ -e "$HOME/Library/Application Support/joplin-desktop" ] && check_link "$HOME/Library/Application Support/joplin-desktop" "Joplin"
 # Tukan — sandbox: его данные в контейнере (Application Support он не пишет;
 # старые проверки смотрели не туда и видели пустышку)
 [ -e "$HOME/Library/Containers/me.tukan.tukan" ] && check_link "$HOME/Library/Containers/me.tukan.tukan" "Tukan"

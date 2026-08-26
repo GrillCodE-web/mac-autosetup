@@ -24,7 +24,7 @@ NC='\033[0m'
 # Маркер версии: если при запуске НЕ напечаталась строка «ВЕРСИЯ СКРИПТА» ниже —
 # ты запускаешь УСТАРЕВШУЮ копию (в старых та самая гонка, что вешала меню).
 # Проверка без запуска: grep -c SCRIPT_VERSION ЗАПУСТИТЬ.command  (0 = старая)
-readonly SCRIPT_VERSION="v6-2026.08.26 — опознание данных по СОДЕРЖИМОМУ (fp_app), а не по именам папок: работает при любых названиях на диске; схема «Имя_Data/Приложение» и Telegram/stable; legacy_target удалён"
+readonly SCRIPT_VERSION="v8-2026.08.27 — Safari: его данные живут в ДВУХ местах, второе — контейнер ~/Library/Containers/com.apple.Safari (cookies, настройки, кэш, история профилей) — тоже переносится на диск (раньше половина следов Safari всегда оставалась в системе); папка профиля на диске ищется по маркерам содержимого, а не по имени «Safari*»"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -198,6 +198,7 @@ precheck_link "Telegram"      "$(tg_local_dir)/stable"
 precheck_link "Sublime Text"  "$HOME/Library/Application Support/Sublime Text"
 precheck_link "Linken Sphere" "$HOME/Library/Application Support/app.ls"
 precheck_link "Safari"        "$HOME/Library/Safari"
+precheck_link "Safari (контейнер: cookies, настройки)" "$HOME/Library/Containers/com.apple.Safari"
 precheck_link "MailMate"      "$HOME/Library/Application Support/MailMate"
 precheck_link "Tox (qTox)"    "$HOME/Library/Application Support/Tox"
 TUKAN_PRECHECK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
@@ -1325,13 +1326,15 @@ resolve_data_dir() {
     # УМНЫЙ ПОИСК КОРНЯ ДАННЫХ: корень — это там, где РЕАЛЬНО лежат данные
     # приложений, а не «папка с именем DataAPP». Маркеры — известные папки
     # приложений, ЛЮБЫХ поколений схемы: app.ls, Tox, MailMate (в т.ч. старая
-    # схема *_Data: Safari_Data, MailMate_Data), контейнер Telegram, tukan.
-    # ПУСТЫЕ папки маркерами не считаются (пустышки от старых прогонов
-    # голоса не дают). Побеждает корень, где живет БОЛЬШЕ РАЗНЫХ приложений.
+    # схема *_Data: Safari_Data, MailMate_Data), контейнер Telegram, tukan,
+    # контейнер Safari (Safari_Container). ПУСТЫЕ папки маркерами не считаются
+    # (пустышки от старых прогонов голоса не дают). Побеждает корень, где
+    # живет БОЛЬШЕ РАЗНЫХ приложений.
     out=""
     for h in $(find "$vol" -maxdepth 6 -type d \
               \( -name "$TG_GLOB" -o -name "app.ls" -o -name "Tox" \
-                 -o -name "MailMate" -o -name "Safari_Data" -o -iname "*tukan*" \) \
+                 -o -name "MailMate" -o -name "Safari_Data" -o -name "Safari_Container" \
+                 -o -iname "*tukan*" \) \
               -not -path "*/.Trashes/*" -not -path "*/.Spotlight-V100/*" 2>/dev/null); do
         [ -n "$(ls -A "$h" 2>/dev/null)" ] || continue
         p=$(dirname "$h"); r="$p"
@@ -1559,10 +1562,13 @@ else
     # --- 0a) ГЛУБОКИЙ ПОИСК: данные могут лежать в ЛЮБОЙ подпапке диска, не только в DataAPP ---
     DISK_ROOT="/Volumes/$VOL_NAME"
     # Без maxdepth: у каждого своя структура папок, данные могут быть закопаны глубоко
+    # ВАЖНО: корень данных ($DATA) НЕ исключаем — раньше Safari_Data и
+    # MailMate_Data/MailMate внутри него не находились (искали «по всему
+    # диску» везде, КРОМЕ папки данных), и Safari оставался без ссылки
     deep_find() {
         logcmd find "$DISK_ROOT" -type d -iname "$1"
         find "$DISK_ROOT" -type d -iname "$1" \
-            -not -path "$DATA/*" -not -path "*/.Trashes/*" \
+            -not -path "*/.Trashes/*" \
             -not -path "*/.Spotlight-V100/*" -not -path "*/.fseventsd/*" \
             -not -path "*/.DocumentRevisions*" -not -path "*/.TemporaryItems/*" 2>/dev/null | head -1
     }
@@ -1643,8 +1649,23 @@ else
     link_from "$HOME/Library/Application Support/Sublime Text" "Sublime Text" "$DATA/Sublime Text" \
         || { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }
     osascript -e 'quit app "Safari"' 2>/dev/null; sleep 1
+    # Папку профиля на диске ищем НЕ по имени «Safari*»: под такой шаблон
+    # попадает и Safari_Container (родитель контейнера com.apple.Safari —
+    # профилем НЕ является), и родитель Safari_Data, когда настоящий профиль
+    # лежит вложенно (Safari_Data/Safari). Берём только папку, где реально
+    # есть файлы профиля Safari (те же маркеры, что и в fp_app ниже).
+    SF_FOUND=""
+    while IFS= read -r sfd; do
+        if [ -e "$sfd/Bookmarks.plist" ] || [ -e "$sfd/History.db" ] \
+           || [ -e "$sfd/TopSites.plist" ] || [ -d "$sfd/Template Icons" ]; then
+            SF_FOUND="$sfd"; break
+        fi
+    done < <(find "$DISK_ROOT" -type d -iname "Safari*" \
+             -not -path "*/.Trashes/*" -not -path "*/.Spotlight-V100/*" \
+             -not -path "*/.fseventsd/*" -not -path "*/.DocumentRevisions*" \
+             -not -path "*/.TemporaryItems/*" 2>/dev/null)
     link_from "$HOME/Library/Safari" "Safari" "$DATA/Safari" \
-        || { SF_FOUND=$(deep_find "Safari*"); [ -n "$SF_FOUND" ] && link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }
+        || { [ -n "$SF_FOUND" ] && link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }
     link_from "$HOME/Library/Application Support/app.ls" "Linken Sphere" "$DATA/app.ls" \
         || { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }
     link_from "$HOME/Library/Application Support/MailMate" "MailMate" "$DATA/MailMate" \
@@ -1656,9 +1677,12 @@ else
     # Старые версии скрипта линковали Application Support → туда Tukan не
     # пишет → на диске оказывалась пустышка. Убираем мёртвые заглушки и
     # линкуем правильное место.
-    for stray in $(find "$HOME/Library/Application Support" -maxdepth 1 -type l -iname "*tukan*" 2>/dev/null); do
+    # ВАЖНО: только построчное чтение — пути содержат пробел («Application
+    # Support»), а разбивка по словам скармливала rm ОБРЕЗКИ пути
+    # («.../Library/Application», «Support/Tukan»)
+    while IFS= read -r stray; do
         rm -f "$stray" 2>/dev/null && dim "$(L 'Убрал мёртвый симлинк Tukan (Tukan туда не пишет):' 'Removed a dead Tukan symlink (Tukan never writes there):') $(basename "$stray")"
-    done
+    done < <(find "$HOME/Library/Application Support" -maxdepth 1 -type l -iname "*tukan*" 2>/dev/null)
     TK_C="$HOME/Library/Containers/me.tukan.tukan"
     if already_linked "$TK_C" "Tukan"; then
         :
@@ -1720,10 +1744,18 @@ else
         # Telegram: контейнер с accounts-metadata (или родитель «stable»)
         if [ -e "$d/accounts-metadata" ]; then echo "telegram"; return 0; fi
         if [ -d "$d/stable" ] && [ -e "$d/stable/accounts-metadata" ]; then echo "telegram"; return 0; fi
-        # Safari: его фирменные файлы профиля
-        for f in "Bookmarks.plist" "History.db" "TopSites.plist" "PerSitePreferences.plist" "TouchIcons.plist"; do
+        # Safari: фирменные файлы профиля. У свежего/почти пустого профиля многих
+        # из них НЕТ — поэтому маркеров широкий список + фирменные ПАПКИ Safari
+        # (у владельца Safari_Data ни одним старым маркером не опознавалась,
+        # хотя это была папка профиля Safari)
+        for f in "Bookmarks.plist" "History.db" "TopSites.plist" "PerSitePreferences.plist" \
+                 "TouchIcons.plist" "CloudTabs.db" "Tabs.db" "LastSession.plist" \
+                 "Recently Closed Tabs.plist" "Local Bookmarks.html"; do
             if [ -e "$d/$f" ]; then echo "safari"; return 0; fi
         done
+        if [ -d "$d/Template Icons" ] || [ -d "$d/Favicon Cache" ]; then
+            echo "safari"; return 0
+        fi
         # Sublime Text: обязательная пара папок
         if [ -d "$d/Local" ] && [ -d "$d/Packages" ]; then echo "sublime"; return 0; fi
         # qTox: профиль *.tox прямо в папке
@@ -1735,7 +1767,16 @@ else
             if grep -qa "me.tukan.tukan" "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; then
                 echo "tukan"; return 0
             fi
+            # Контейнер САМОГО Safari: cookies, настройки, кэш, история профилей.
+            # Отдельный ключ, потому что линкуется он в другое место, чем профиль.
+            if grep -qa "com.apple.Safari" "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; then
+                echo "safari_container"; return 0
+            fi
             return 0
+        fi
+        # Joplin: база заметок + её служебные файлы
+        if [ -e "$d/database.sqlite" ] && { [ -d "$d/profiles" ] || [ -e "$d/settings.json" ]; }; then
+            echo "joplin"; return 0
         fi
         # Linken Sphere: имя папки фиксировано самим приложением
         if [ "$(basename "$d")" = "app.ls" ]; then echo "sphere"; return 0; fi
@@ -1747,11 +1788,13 @@ else
         case "$1" in
             telegram) echo "$(tg_local_dir)/stable" ;;
             safari)   echo "$HOME/Library/Safari" ;;
+            safari_container) echo "$HOME/Library/Containers/com.apple.Safari" ;;
             sublime)  echo "$HOME/Library/Application Support/Sublime Text" ;;
             tox)      echo "$HOME/Library/Application Support/Tox" ;;
             mailmate) echo "$HOME/Library/Application Support/MailMate" ;;
             tukan)    echo "$HOME/Library/Containers/me.tukan.tukan" ;;
             sphere)   echo "$HOME/Library/Application Support/app.ls" ;;
+            joplin)   echo "$HOME/Library/Application Support/joplin-desktop" ;;
         esac
     }
     FOUND=0
@@ -1771,6 +1814,7 @@ else
         fi
         if [ -z "$key" ]; then
             dim "$(L "Папка «$name»" "Folder \"$name\"") — $(L 'не понял по содержимому, какому приложению она принадлежит (данные на диске не тронуты).' 'could not tell from its contents which app it belongs to (data on the disk is untouched).')"
+            dim "   $(L 'внутри:' 'inside:') $(ls -A "$item" 2>/dev/null | head -8 | tr '\n' ' ')"
             continue
         fi
         # Telegram все данные держит в подпапке «stable» — линковать нужно её
@@ -1842,6 +1886,11 @@ else
         local src="$1" dstname="$2" launchname="$3"
         local dst="$DATA/$dstname"
         [ -L "$src" ] && return 0
+        # Пустая папка на диске данными НЕ считается (заглушка от старых
+        # прогонов): линковать в неё нельзя — это тот самый «пустой
+        # Safari». А при копировании она дала бы вложенность dst/<имя>.
+        # Убираю пустую заглушку заранее.
+        [ -d "$dst" ] && [ -z "$(ls -A "$dst" 2>/dev/null)" ] && rm -rf "$dst"
         if [ -d "$dst" ]; then
             link_to "$src" "$dst"
         elif [ -d "$src" ]; then
@@ -1898,6 +1947,13 @@ else
     # если копирование не пройдёт — Терминалу нужен «Полный доступ к диску».
     osascript -e 'quit app "Safari"' 2>/dev/null; sleep 2
     ensure_app "$HOME/Library/Safari" "Safari_Data" "Safari"
+    # Safari хранит данные в ДВУХ местах. Выше — профиль (~/Library/Safari:
+    # закладки, история). Но cookies, логины, настройки, кэш и история
+    # профилей лежат в контейнере ~/Library/Containers/com.apple.Safari —
+    # если его не перенести, на Mac остаются ПОЛОВИНА следов Safari
+    # (cookies выдают посещённые сайты даже при пустой истории). Переносим так же,
+    # как контейнер Tukan: контейнер целиком на диск + симлинк.
+    ensure_app "$HOME/Library/Containers/com.apple.Safari" "Safari_Container/com.apple.Safari" "Safari"
 
     # MailMate: почта (Messages) и настройки аккаунтов — только на диске
     if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ] || [ -e "$HOME/Library/Application Support/MailMate" ]; then
