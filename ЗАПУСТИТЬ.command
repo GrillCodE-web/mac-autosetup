@@ -793,24 +793,27 @@ defaults delete com.apple.recentitems 2>/dev/null
 defaults write com.apple.recentitems RecentApplications -dict MaxAmount 0 2>/dev/null
 defaults write com.apple.recentitems RecentDocuments -dict MaxAmount 0 2>/dev/null
 defaults write com.apple.recentitems RecentServers -dict MaxAmount 0 2>/dev/null
-# сами списки: гасим демона (чтобы не восстановил из памяти), затем стираем файлы
+# сами списки: атомарно уводим ВСЮ папку в сторону и гасим демона ПОСЛЕ переименования.
+# ВАЖНО: раньше здесь был killall + rm отдельных .sfl2 — launchd поднимал демона
+# посреди удаления, файл оставался обрезанным, демон уходил в цикл крашей и
+# вешал меню системы (SystemUIServer). Полное переименование папки гонки не дает:
+# демон при следующем старте создает папку пустой.
 SFL_DIR="$HOME/Library/Application Support/com.apple.sharedfilelist"
 if [ -d "$SFL_DIR" ]; then
-    killall sharedfilelistd 2>/dev/null
-    sleep 2
-    rm -f "$SFL_DIR/com.apple.LSSharedFileList.RecentApplications"* 2>/dev/null
-    rm -f "$SFL_DIR/com.apple.LSSharedFileList.RecentDocuments"* 2>/dev/null
-    rm -f "$SFL_DIR/com.apple.LSSharedFileList.RecentServers"* 2>/dev/null
-    rm -rf "$SFL_DIR/com.apple.LSSharedFileList.ApplicationRecentDocuments" 2>/dev/null
+    rm -rf "$SFL_DIR.old" 2>/dev/null
+    mv "$SFL_DIR" "$SFL_DIR.old" 2>/dev/null
 fi
+killall sharedfilelistd 2>/dev/null
+sleep 1
 killall Dock 2>/dev/null
-# честная проверка: .sfl2 будет пересоздан демоном пустым — большой размер = записи остались
-REC_SIZE=$(find "$SFL_DIR" -maxdepth 1 -name "com.apple.LSSharedFileList.Recent*" -type f -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END{print s+0}')
-if [ "${REC_SIZE:-0}" -gt 1000 ]; then
+killall Finder 2>/dev/null
+killall SystemUIServer 2>/dev/null
+# честная проверка: папки нет / пустая — списков не осталось
+if [ ! -d "$SFL_DIR" ] || [ -z "$(ls -A "$SFL_DIR" 2>/dev/null)" ]; then
+    ok "$(L 'Recents выключен ВЕЗДЕ: секция в Dock скрыта, списки «Недавние объекты» стерты (папка уведена целиком), новые записи не собираются (лимиты = 0).' 'Recents is off everywhere: Dock section hidden, Recent Items wiped (folder moved aside whole), no new entries collected (limits = 0).')"
+else
     warn "$(L 'Списки «Недавние объекты» стерты не до конца — перезагрузи Mac (перезагрузка есть в конце скрипта), меню очистится полностью.' 'Recent Items lists were not fully wiped — reboot the Mac (the script reboots at the end) to fully clear the menu.')"
     REC_MANUAL=1
-else
-    ok "$(L 'Recents выключен ВЕЗДЕ: секция в Dock скрыта, списки «Недавние объекты» стерты (проверил файлы .sfl2), новые записи не собираются (лимиты = 0).' 'Recents is off everywhere: Dock section hidden, Recent Items lists wiped (verified the .sfl2 files), no new entries are collected (limits = 0).')"
 fi
 
 # Геолокация выключить
