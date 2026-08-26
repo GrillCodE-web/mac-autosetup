@@ -43,6 +43,15 @@ t2s() {
     fi
 }
 
+SPIN_N=0
+spin() {
+    local f='|/-\' c
+    c=${f:$SPIN_N:1}
+    SPIN_N=$(( (SPIN_N + 1) % 4 ))
+    printf '\033[2K  %s  %s ...\r' "$c" "$1"
+}
+spin_end() { printf '\033[2K'; }
+
 good() { echo -e "  ${GREEN}${BOLD}✓${NC}  $1"; PASS=$((PASS+1)); }
 bad()  { echo -e "  ${RED}${BOLD}✗${NC}  $1"; FAIL=$((FAIL+1)); }
 dunno(){ echo -e "  ${YELLOW}${BOLD}?${NC}  $1"; UNKNOWN=$((UNKNOWN+1)); }
@@ -345,12 +354,40 @@ else
     bad "Ползунок «пароль админа для общесистемных настроек» выключен (Настройки -> Конфиденциальность -> Дополнительно)."
 fi
 
-# --- 10. Автообновления ---
-AU=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null)
+# --- 10. Автообновления: включены? и есть ли обновления прямо сейчас ---
+# Ключ читаем через sudo: обычный defaults берет кэш cfprefsd и может соврать
+# «выключено», хотя всё включено (так и вышло на первом реальном прогоне).
+AU=$(echo "$ADMIN_PASS" | sudo -S defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null)
 if [ "$AU" = "1" ]; then
-    good "Автопроверка обновлений macOS включена."
+    good "Автообновления включены: Mac сам проверяет и скачивает обновления."
 else
-    bad "Автообновления выключены (Настройки -> Основные -> Обновление ПО)."
+    bad "Автопроверка обновлений выключена (Настройки -> Основные -> Обновление ПО)."
+fi
+
+# Есть ли обновления, которые пора поставить. СТАВИТЬ их за тебя скрипт НЕ будет
+# (автоустановка выключена нарочно — без внезапных перезагрузок), просто скажу.
+UPDF="/tmp/.maccheck_upd_$$"
+( softwareupdate --list >"$UPDF" 2>/dev/null ) &
+UPD_PID=$!
+UPD_TRY=0
+while kill -0 $UPD_PID 2>/dev/null && [ $UPD_TRY -lt 120 ]; do
+    spin "проверяю обновления macOS"
+    sleep 0.3
+    UPD_TRY=$((UPD_TRY + 1))
+done
+kill $UPD_PID 2>/dev/null; wait $UPD_PID 2>/dev/null
+spin_end
+UPD=$(cat "$UPDF" 2>/dev/null)
+rm -f "$UPDF"
+if printf '%s\n' "$UPD" | grep -qi "No new software available"; then
+    good "Обновлений macOS сейчас нет — всё свежее."
+elif printf '%s\n' "$UPD" | grep -q '^[[:space:]]*\*'; then
+    dunno "Есть обновления macOS — поставь их сам, когда удобно (Настройки -> Основные -> Обновление ПО)."
+    printf '%s\n' "$UPD" | grep '^[[:space:]]*\*' | sed 's/^[*[:space:]]*//' | head -5 | while IFS= read -r u; do
+        dim "обновление: $u"
+    done
+else
+    dunno "Не смог проверить обновления (нет сети?). Проверь потом сам: Настройки -> Основные -> Обновление ПО."
 fi
 
 # --- 11. Экран блокировки / выключение дисплея ---

@@ -1484,10 +1484,36 @@ else
         read -r -p "   $(L 'Запустить приложение сейчас, чтобы оно создало папку? (да/нет) [да]' 'Launch the app now so it creates its folder? (yes/no) [yes]'): " OL
         OL=$(yn "${OL:-да}")
         [ "$OL" != "да" ] && return 1
+        # Intel-приложения (tukan среди них) на Apple Silicon не открываются без
+        # Rosetta — ставлю заранее, иначе выскакивает «To open ... you need to
+        # install Rosetta» и запуск тихо проваливается.
+        local base mb
+        base=$(basename "$appmatch" .app)
+        mb=$(find "$appmatch/Contents/MacOS" -maxdepth 1 -type f 2>/dev/null | head -1)
+        if [ -n "$mb" ] && [ "$(uname -m)" = "arm64" ] && [ ! -e /usr/libexec/rosetta/oahd ] \
+           && ! lipo -archs "$mb" 2>/dev/null | grep -q arm64; then
+            info "$(L 'Приложению нужна Rosetta — ставлю (до минуты)...' 'The app needs Rosetta — installing (up to a minute)...')"
+            as_root softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1
+            [ -e /usr/libexec/rosetta/oahd ] && ok "$(L 'Rosetta установлена.' 'Rosetta installed.')"
+        fi
+        # Снимаю карантин Gatekeeper, иначе первый запуск упирается в
+        # «Apple could not verify ... is free of malware» и приложение не стартует.
+        as_root xattr -dr com.apple.quarantine "$appmatch" 2>/dev/null
+        # Первый запуск бывает капризным: перезапускаю приложение, пока оно не
+        # поднимется (то самое «надо несколько раз перезапустить») или пока не
+        # появится его папка с данными.
+        local n
         open "$appmatch" 2>/dev/null
+        n=0
+        while [ ! -d "$src" ] && [ $n -lt 6 ]; do
+            pgrep -if "$base" >/dev/null 2>&1 && break
+            open "$appmatch" 2>/dev/null
+            sleep 5
+            n=$((n + 1))
+        done
         echo "$(L 'Войди/настрой, потом ЗАКРОЙ приложение и нажми Enter.' 'Sign in / set up, then QUIT the app and press Enter.')"
         pause
-        osascript -e "quit app \"$(basename "$appmatch" .app)\"" 2>/dev/null
+        osascript -e "quit app \"$base\"" 2>/dev/null
         sleep 2
         [ -d "$src" ]
     }
@@ -1502,13 +1528,15 @@ else
             link_to "$src" "$dst"
         elif [ -d "$src" ]; then
             mkdir -p "$(dirname "$dst")"
-            cp -R "$src" "$dst"
+            cp -R "$src" "$dst" 2>/dev/null
             if [ $? -eq 0 ]; then
                 rm -rf "$src"
                 ok "$dstname — данные перенесены на диск, копия в системе СТЕРТА."
                 link_to "$src" "$dst"
             else
-                err "$dstname — копирование на диск не удалось, оригинал оставлен в системе!"
+                rm -rf "$dst"
+                err "$dstname — копирование на диск не удалось (macOS не дала), оригинал остался в системе."
+                dim "$(L 'Причина почти всегда одна: дай Терминалу «Полный доступ к диску» (Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску), перезапусти Терминал и запусти скрипт еще раз.' 'Almost always the same cause: grant Terminal Full Disk Access (Settings -> Privacy & Security -> Full Disk Access), restart Terminal and run the script again.')"
             fi
         elif offer_launch "$launchname" "$src"; then
             # Приложение создало папку в системе — переносим её на диск
@@ -1573,8 +1601,16 @@ as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate Automatical
 as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true 2>/dev/null
 as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool true 2>/dev/null
 as_root defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool true 2>/dev/null
-ok "Обновления: автопроверка и автоскачивание ВКЛ, автоустановка системы ВЫКЛ."
-ok "Mac больше НЕ будет сам перезагружаться из-за обновлений — ставишь их сам, когда удобно."
+# Перечитываю ключи и проверяю, что реально записалось: раньше «ок» печаталось
+# всегда, а проверка потом честно говорила «выключено». Теперь вранья нет.
+AU_ON=$(as_root defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null)
+AU_DL=$(as_root defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload 2>/dev/null)
+if [ "$AU_ON" = "1" ] && [ "$AU_DL" = "1" ]; then
+    ok "$(L 'Обновления: автопроверка и автоскачивание ВКЛ — Mac сам узнает о новых.' 'Updates: auto-check and auto-download ON — the Mac learns about new ones itself.')"
+else
+    warn "$(L 'Автопроверка/автоскачивание записались не до конца — включи руками: Настройки -> Основные -> Обновление ПО.' 'Auto-check/auto-download did not stick — enable by hand: Settings -> General -> Software Update.')"
+fi
+ok "$(L 'АвтоУСТАНОВКА системы ВЫКЛ — Mac не будет сам перезагружаться из-за обновлений, ставишь их сам, когда удобно.' 'Auto-INSTALL is OFF — the Mac will not reboot itself for updates; you install them yourself when convenient.')"
 
 # ------------------------------------------------------------
 # ЧИСТКА ИСТОРИИ ТЕРМИНАЛА
