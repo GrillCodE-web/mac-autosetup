@@ -6,8 +6,10 @@
 #      монтирование (именно оно вешает Finder),
 #   2) пересоздает падающего по кругу демона «недавних»,
 #   3) перезапускает iCloud-провайдеров (безопасно, сами встанут),
-#   4) полностью сбрасывает Finder (настройки/кеш/окна),
-#   5) честный вердикт. Если что-то осталось — сам вызывает
+#   4) убирает симлинки Desktop/Documents/Downloads на диск
+#      (и вложенные Desktop/Desktop), возвращает настоящие папки,
+#   5) полностью сбрасывает Finder (настройки/кеш/окна),
+#   6) честный вердикт. Если что-то осталось — сам вызывает
 #      перезагрузку (единственный способ снять зависшее в ядре).
 #  Данные на /Volumes/EncryptDisk НЕ трогает вообще.
 # ============================================================
@@ -25,7 +27,7 @@ IPS="$HOME/Library/Logs/DiagnosticReports"
 IPS_BEFORE=$(ls "$IPS" 2>/dev/null | sort)
 
 # ---------- 1. VeraCrypt + FUSE-T под корень ----------
-step "1/5 Вырубаю VeraCrypt и FUSE-T (данные на диске — НЕ трогаю)"
+step "1/6 Вырубаю VeraCrypt и FUSE-T (данные на диске — НЕ трогаю)"
 
 # сначала аккуратно: пусть сам размонтирует что успел
 osascript -e 'quit app "VeraCrypt"' >/dev/null 2>&1
@@ -63,7 +65,7 @@ pgrep -f VeraCrypt >/dev/null 2>&1 && bad "процессы VeraCrypt живы �
                                    || ok "процессов VeraCrypt нет"
 
 # ---------- 2. Демон «недавних» ----------
-step "2/5 Демон «недавних»: пересоздаю папку с нуля"
+step "2/6 Демон «недавних»: пересоздаю папку с нуля"
 SFL="$HOME/Library/Application Support/com.apple.sharedfilelist"
 rm -rf "$SFL.bak2" 2>/dev/null
 [ -d "$SFL" ] && mv "$SFL" "$SFL.bak2" 2>/dev/null
@@ -71,13 +73,38 @@ killall sharedfilelistd 2>/dev/null
 ok "старая папка в .bak2, демон стартует чистым (это только списки «недавних»)"
 
 # ---------- 3. iCloud-провайдеры ----------
-step "3/5 Перезапускаю iCloud-провайдеров (если зависли на папках)"
+step "3/6 Перезапускаю iCloud-провайдеров (если зависли на папках)"
 killall fileproviderd 2>/dev/null
 killall bird 2>/dev/null
 ok "fileproviderd и bird перезапущены (сами поднимутся)"
 
-# ---------- 4. Finder: полный сброс ----------
-step "4/5 Finder: полный сброс настроек и кеша"
+# ---------- 4. Папки: убираем симлинки на диск ----------
+step "4/6 Папки: убираю симлинки на зашифрованный диск"
+for d in Desktop Documents Downloads; do
+    src="$HOME/$d"
+
+    # вложенный симлинк ~/Desktop/Desktop и т.п.
+    if [ -L "$src/$d" ] 2>/dev/null; then
+        rm -f "$src/$d" && ok "убран вложенный симлинк: $d/$d"
+    fi
+
+    # папка сама стала симлинком на диск
+    if [ -L "$src" ]; then
+        rm -f "$src"
+        if [ -d "$src.old" ]; then
+            mv "$src.old" "$src" && ok "$d — симлинк убран, папка возвращена из .old"
+        elif [ -d "$src.autosetup-old" ]; then
+            mv "$src.autosetup-old" "$src" && ok "$d — симлинк убран, папка возвращена из .autosetup-old"
+        else
+            mkdir -p "$src" && ok "$d — симлинк убран, создана пустая папка (файлы лежат на EncryptDisk)"
+        fi
+    else
+        ok "$d — уже настоящая папка, симлинка нет"
+    fi
+done
+
+# ---------- 5. Finder: полный сброс ----------
+step "5/6 Finder: полный сброс настроек и кеша"
 rm -f "$HOME/Library/Preferences/com.apple.finder.plist" 2>/dev/null
 rm -rf "$HOME/Library/Saved Application State/com.apple.finder.savedState" 2>/dev/null
 rm -rf "$HOME/Library/Caches/com.apple.finder" 2>/dev/null
@@ -94,13 +121,15 @@ else
         || bad "Finder не поднялся — добьет перезагрузка"
 fi
 
-# ---------- 5. Вердикт ----------
-step "5/5 Вердикт"
+# ---------- 6. Вердикт ----------
+step "6/6 Вердикт"
 for d in Desktop Documents Downloads; do
     if [ -L "$HOME/$d" ]; then
         bad "$d — снова симлинк (кто-то его пересоздал)"
+    elif [ -L "$HOME/$d/$d" ] 2>/dev/null; then
+        bad "$d/$d — вложенный симлинк остался"
     else
-        ok "$d — настоящая папка"
+        ok "$d — настоящая папка, симлинков нет"
     fi
 done
 IPS_AFTER=$(ls "$IPS" 2>/dev/null | sort)
