@@ -5,8 +5,14 @@
 #  Человеку нужно только: нажимать Enter и один раз ввести пароль
 # ============================================================
 
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
 LOG="/tmp/autosetup_log.txt"
-exec > >(tee -a "$LOG") 2>&1
+DLOG="/tmp/autosetup_commands.txt"
+: > "$LOG"
+echo "=== ДЕТАЛЬНЫЙ ЛОГ КОМАНД, запуск: $(date) ===" > "$DLOG"
+exec > >(tee >(sed -l $'s/\x1b\\[[0-9;]*m//g' >> "$LOG")) 2>&1
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -17,18 +23,44 @@ NC='\033[0m'
 
 ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
-err()  { echo -e "${RED}[ОШИБКА]${NC} $1"; }
+err()  { echo -e "${RED}[$(L 'ОШИБКА' 'ERROR')]${NC} $1"; }
+
+# Двуязычный вывод: L "русский" "english" -> печатает по выбранному языку
+UILANG=ru
+L() { if [ "$UILANG" = "en" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+# Нормализация ответа да/нет на обоих языках -> всегда "да" или "нет"
+yn() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        yes|y|да|д|ДА|Д|1) echo "да" ;;
+        no|n|нет|н|НЕТ|Н|0) echo "нет" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+logcmd() {
+    local a line=""
+    for a in "$@"; do
+        [ -n "$ADMIN_PASS" ] && [ "$a" = "$ADMIN_PASS" ] && a="<пароль>"
+        [ -n "$DISK_PASS" ] && [ "$a" = "$DISK_PASS" ] && a="<пароль>"
+        [ -n "$USER_PASS" ] && [ "$a" = "$USER_PASS" ] && a="<пароль>"
+        line="$line $a"
+    done
+    echo "[$(date '+%H:%M:%S')] \$$line" >> "$DLOG"
+}
+run() { logcmd "$@"; "$@"; local rc=$?; [ $rc -ne 0 ] && echo "    ^ код возврата: $rc" >> "$DLOG"; return $rc; }
+as_root() { logcmd sudo "$@"; printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; local rc=$?; [ $rc -ne 0 ] && echo "    ^ код возврата: $rc" >> "$DLOG"; return $rc; }
 
 step() {
     echo ""
     echo -e "${CYAN}============================================================${NC}"
     echo -e "${BOLD}  $1${NC}"
     echo -e "${CYAN}============================================================${NC}"
+    { echo ""; echo "########## $1 ##########"; } >> "$DLOG"
 }
 
 pause() {
     echo ""
-    echo -e "${YELLOW}>>> Когда сделаешь — нажми Enter <<<${NC}"
+    echo -e "${YELLOW}>>> $(L 'Когда сделаешь — нажми Enter' 'When done — press Enter') <<<${NC}"
     read -r
 }
 
@@ -43,10 +75,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 chmod +x "$SCRIPT_DIR/ПРОВЕРИТЬ.command" 2>/dev/null
 
 clear
-step "НАЧАЛО НАСТРОЙКИ"
-echo "Сейчас скрипт настроит этот Mac полностью сам."
-echo "От тебя нужно минимум действий — просто следуй экрану."
-echo "Весь ход записывается в файл: $LOG"
+echo "Выбери язык / Choose language:"
+echo "   1 — Русский"
+echo "   2 — English"
+read -r -p "   [1]: " LANG_CH
+[ "$LANG_CH" = "2" ] && UILANG=en || UILANG=ru
+
+step "$(L 'НАЧАЛО НАСТРОЙКИ' 'SETUP START')"
+echo "$(L 'Сейчас скрипт настроит этот Mac полностью сам.' 'This script will set up this Mac automatically.')"
+echo "$(L 'От тебя нужно минимум действий — просто следуй экрану.' 'Minimal input needed — just follow the screen.')"
+echo "$(L 'Весь ход записывается в файл:' 'Full log is written to:') $LOG"
 echo ""
 
 # ------------------------------------------------------------
@@ -58,7 +96,7 @@ echo "1) Создать ОТДЕЛЬНУЮ рабочую учетную зап�
 echo "   НЕТ — проще: одна учетка, один пароль, запутаться невозможно."
 echo "   ДА  — чуть безопаснее, но будет две учетки и два пароля."
 read -r -p "   (да/нет) [нет]: " CREATE_USER
-CREATE_USER=${CREATE_USER:-нет}
+CREATE_USER=$(yn "${CREATE_USER:-нет}")
 
 if [ "$CREATE_USER" = "да" ]; then
     echo "   Придумай ПАРОЛЬ для новой рабочей учетной записи."
@@ -86,7 +124,7 @@ echo "2) Пароль от этого Mac (тот, что задал при пе
 read -rs -p "   Пароль администратора: " ADMIN_PASS; echo ""
 
 # Проверяем sudo сразу
-echo "$ADMIN_PASS" | sudo -S -k true 2>/dev/null
+as_root -k true 2>/dev/null
 if [ $? -ne 0 ]; then
     err "Пароль администратора не подошел. Запусти скрипт заново."
     exit 1
@@ -99,11 +137,10 @@ echo "   У большинства он УЖЕ зашифрован и с дан
 echo "   «да»  = НИЧЕГО не стирать, просто подключить диск."
 echo "   «нет» = диск будет СТЕРТ начисто и зашифрован заново!"
 read -r -p "   Он УЖЕ зашифрован VeraCrypt раньше? (да/нет) [да]: " HAVE_DISK
-HAVE_DISK=${HAVE_DISK:-да}
+HAVE_DISK=$(yn "${HAVE_DISK:-да}")
 if [ "$HAVE_DISK" = "да" ]; then
-    echo "   Введи пароль от диска:"
-    read -rs -p "   Пароль диска: " DISK_PASS; echo ""
-    read -r -p "   PIM (если не знаешь, что это — просто Enter): " DISK_PIM
+    echo "   Ок. Пароль и PIM вводить НЕ нужно — когда дойдем до диска,"
+    echo "   ты сам смонтируешь его через окно VeraCrypt, а я дальше все найду."
 else
     echo "   Придумай ПАРОЛЬ ДЛЯ ДИСКА (запомни — без него данные не вернуть):"
     echo "   ВАЖНО: ТОЛЬКО английские буквы и цифры! Без русских букв и без"
@@ -124,14 +161,55 @@ else
     read -r -p "   PIM (Enter = без PIM): " DISK_PIM
 fi
 DISK_PIM=${DISK_PIM:-0}
+if ! [[ "$DISK_PIM" =~ ^[0-9]+$ ]]; then
+    warn "PIM должен быть числом — введено «$DISK_PIM», использую «без PIM»."
+    DISK_PIM=0
+fi
+
+state_tz() {
+    case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
+        CT|DE|FL|GA|KY|ME|MD|MA|NH|NJ|NY|NC|OH|PA|RI|SC|VT|VA|WV|DC) echo "America/New_York" ;;
+        MI) echo "America/Detroit" ;;
+        IN) echo "America/Indiana/Indianapolis" ;;
+        AL|AR|IL|IA|KS|LA|MN|MS|MO|NE|ND|OK|SD|TN|TX|WI) echo "America/Chicago" ;;
+        CO|MT|NM|UT|WY) echo "America/Denver" ;;
+        AZ) echo "America/Phoenix" ;;
+        ID) echo "America/Boise" ;;
+        CA|NV|OR|WA) echo "America/Los_Angeles" ;;
+        AK) echo "America/Anchorage" ;;
+        HI) echo "Pacific/Honolulu" ;;
+        *) echo "" ;;
+    esac
+}
 
 echo ""
-echo "4) Часовой пояс под страну VPN (чтобы часы не палели реальное место)."
-echo "   Примеры: America/New_York, Europe/Berlin, Europe/London"
-read -r -p "   Часовой пояс (Enter = не менять): " VPN_TZ
+echo "4) $(L 'Часовой пояс под VPN (чтобы часы не палили реальное место).' 'Time zone matching your VPN (so the clock does not leak your real location).')"
+echo "   $(L 'Определяю штат по текущему IP...' 'Detecting US state from current IP...')"
+IP_STATE=$(curl -s --max-time 8 "https://ipapi.co/region_code" 2>/dev/null)
+[[ "$IP_STATE" =~ ^[A-Z]{2}$ ]] || IP_STATE=$(curl -s --max-time 8 "http://ip-api.com/line/?fields=region" 2>/dev/null)
+IP_TZ=""
+[[ "$IP_STATE" =~ ^[A-Za-z]{2}$ ]] && IP_TZ=$(state_tz "$IP_STATE")
+VPN_TZ=""
+if [ -n "$IP_TZ" ]; then
+    ok "$(L 'По IP: штат' 'By IP: state') $IP_STATE -> $IP_TZ"
+    echo "   $(L 'Использовать этот (по VPN) или выбрать штат самому?' 'Use this (VPN) or pick a state yourself?')"
+    read -r -p "   $(L 'Enter = по VPN, или введи код штата (напр. NY, CA, TX)' 'Enter = VPN, or type a state code (e.g. NY, CA, TX)'): " TZ_CH
+else
+    warn "$(L 'Штат по IP не определился (нет сети/VPN).' 'Could not detect state from IP (no net/VPN).')"
+    read -r -p "   $(L 'Введи код штата (напр. NY) или Enter — не менять' 'Type a state code (e.g. NY) or Enter to skip'): " TZ_CH
+fi
+if [ -z "$TZ_CH" ]; then
+    VPN_TZ="$IP_TZ"
+else
+    VPN_TZ=$(state_tz "$TZ_CH")
+    if [ -z "$VPN_TZ" ]; then
+        warn "$(L 'Не знаю такой штат — часовой пояс не меняю.' 'Unknown state — time zone not changed.')"
+        echo "   $(L 'Коды штатов:' 'State codes:') AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC"
+    fi
+fi
 
 echo ""
-ok "Все вопросы заданы. Дальше скрипт работает сам (пару раз попросит вставить диск)."
+ok "$(L 'Все вопросы заданы. Дальше скрипт работает сам (пару раз попросит вставить диск).' 'All questions done. The script runs on its own now (it will ask to insert the disk a couple of times).')"
 
 # ------------------------------------------------------------
 # ФАЗА 1: УЧЕТНАЯ ЗАПИСЬ
@@ -145,14 +223,14 @@ elif id "$NEW_USER" &>/dev/null; then
 else
     LAST_ID=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1)
     NEW_ID=$((LAST_ID + 1))
-    echo "$ADMIN_PASS" | sudo -S dscl . -create /Users/"$NEW_USER"
-    echo "$ADMIN_PASS" | sudo -S dscl . -create /Users/"$NEW_USER" UserShell /bin/bash
-    echo "$ADMIN_PASS" | sudo -S dscl . -create /Users/"$NEW_USER" RealName "$NEW_USER"
-    echo "$ADMIN_PASS" | sudo -S dscl . -create /Users/"$NEW_USER" UniqueID "$NEW_ID"
-    echo "$ADMIN_PASS" | sudo -S dscl . -create /Users/"$NEW_USER" PrimaryGroupID 20
-    echo "$ADMIN_PASS" | sudo -S dscl . -create /Users/"$NEW_USER" NFSHomeDirectory /Users/"$NEW_USER"
-    echo "$ADMIN_PASS" | sudo -S dscl . -passwd /Users/"$NEW_USER" "$USER_PASS"
-    echo "$ADMIN_PASS" | sudo -S createhomedir -c -u "$NEW_USER" &>/dev/null
+    as_root dscl . -create /Users/"$NEW_USER"
+    as_root dscl . -create /Users/"$NEW_USER" UserShell /bin/bash
+    as_root dscl . -create /Users/"$NEW_USER" RealName "$NEW_USER"
+    as_root dscl . -create /Users/"$NEW_USER" UniqueID "$NEW_ID"
+    as_root dscl . -create /Users/"$NEW_USER" PrimaryGroupID 20
+    as_root dscl . -create /Users/"$NEW_USER" NFSHomeDirectory /Users/"$NEW_USER"
+    as_root dscl . -passwd /Users/"$NEW_USER" "$USER_PASS"
+    as_root createhomedir -c -u "$NEW_USER" &>/dev/null
     ok "Учетная запись $NEW_USER создана (стандартная, без прав админа)."
 fi
 
@@ -172,18 +250,20 @@ else
 fi
 
 # Выключение дисплея через 5 минут
-echo "$ADMIN_PASS" | sudo -S pmset -a displaysleep 5 &>/dev/null
+as_root pmset -a displaysleep 5 &>/dev/null
 ok "Дисплей выключается через 5 минут."
 
 # Автовыход из системы через 30 минут
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int 1800
+as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int 1800
 ok "Автовыход из системы через 30 минут."
 
 # Второй ползунок «Дополнительно»: пароль администратора для общесистемных настроек
 AUTH_TMP="/tmp/sysprefs_auth.plist"
-echo "$ADMIN_PASS" | sudo -S security authorizationdb read system.preferences > "$AUTH_TMP" 2>/dev/null
+as_root security authorizationdb read system.preferences > "$AUTH_TMP" 2>/dev/null
 if [ -s "$AUTH_TMP" ] && plutil -replace shared -bool false "$AUTH_TMP" 2>/dev/null; then
-    if echo "$ADMIN_PASS" | sudo -S security authorizationdb write system.preferences < "$AUTH_TMP" 2>/dev/null; then
+    logcmd sudo security authorizationdb write system.preferences "<$AUTH_TMP"
+    echo "$ADMIN_PASS" | sudo -S true 2>/dev/null
+    if sudo -n security authorizationdb write system.preferences < "$AUTH_TMP" 2>/dev/null; then
         ok "Общесистемные настройки — только с паролем администратора."
     else
         warn "Не смог включить «пароль админа для общесистемных настроек» — включи руками (Настройки -> Конфиденциальность -> Дополнительно)."
@@ -194,19 +274,21 @@ fi
 rm -f "$AUTH_TMP"
 
 # Экран входа: без подсказок пароля, без сообщения, без кнопок сна/перезагрузки
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.loginwindow RetriesUntilHint -int 0 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.loginwindow LoginwindowText -string "" 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.loginwindow PowerOffDisabled -bool true 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.loginwindow RestartDisabled -bool true 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.loginwindow SleepDisabled -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.loginwindow RetriesUntilHint -int 0 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.loginwindow LoginwindowText -string "" 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.loginwindow PowerOffDisabled -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.loginwindow RestartDisabled -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.loginwindow SleepDisabled -bool true 2>/dev/null
 ok "Экран входа: подсказки, сообщение и кнопки питания отключены."
 
-# Брандмауэр: вкл + блок входящих + stealth
+# Брандмауэр: вкл + stealth. БЕЗ --setblockall: режим «блокировать все
+# входящие» ломает FUSE-T (он монтирует диски через локальный NFS/SMB на
+# 127.0.0.1) — VeraCrypt тогда вечно висит на «пожалуйста подождите».
 FW="/usr/libexec/ApplicationFirewall/socketfilterfw"
-echo "$ADMIN_PASS" | sudo -S "$FW" --setglobalstate on &>/dev/null
-echo "$ADMIN_PASS" | sudo -S "$FW" --setblockall on &>/dev/null
-echo "$ADMIN_PASS" | sudo -S "$FW" --setstealthmode on &>/dev/null
-ok "Брандмауэр: включен, блок входящих, режим невидимости."
+as_root "$FW" --setglobalstate on &>/dev/null
+as_root "$FW" --setblockall off &>/dev/null
+as_root "$FW" --setstealthmode on &>/dev/null
+ok "Брандмауэр: включен + режим невидимости (блок ВСЕХ входящих выключен — он ломает VeraCrypt/FUSE-T)."
 
 # AirDrop и Handoff выключить
 defaults write com.apple.NetworkBrowser DisableAirDrop -bool YES 2>/dev/null
@@ -215,12 +297,12 @@ defaults -currentHost write com.apple.coreservices.useractivityd ActivityReceivi
 ok "AirDrop и Handoff выключены."
 
 # Геолокация выключить
-echo "$ADMIN_PASS" | sudo -S defaults write /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled -bool false 2>/dev/null
+as_root defaults write /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled -bool false 2>/dev/null
 ok "Службы геолокации выключены."
 
 # Аналитика выключить
 defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null
+as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null
 ok "Аналитика и отправка отчетов выключены."
 
 # Siri выключить
@@ -243,7 +325,7 @@ if [ -n "$WIFI_DEV" ]; then
         networksetup -setairportpower "$WIFI_DEV" off &>/dev/null
         WIFI_SVC=$(networksetup -listnetworkserviceorder 2>/dev/null | grep -B1 "Device: $WIFI_DEV)" | head -1 | sed 's/^([^)]*) //')
         [ -z "$WIFI_SVC" ] && WIFI_SVC="Wi-Fi"
-        echo "$ADMIN_PASS" | sudo -S networksetup -removenetworkservice "$WIFI_SVC" &>/dev/null
+        as_root networksetup -removenetworkservice "$WIFI_SVC" &>/dev/null
         if networksetup -listallnetworkservices 2>/dev/null | grep -qx "\*\{0,1\}$WIFI_SVC"; then
             warn "Wi-Fi выключен, но удалить службу «$WIFI_SVC» не вышло — удали руками: Настройки -> Сеть -> Wi-Fi -> ... -> Удалить службу."
         else
@@ -256,12 +338,14 @@ fi
 
 # Часовой пояс под страну VPN
 if [ -n "$VPN_TZ" ]; then
-    echo "$ADMIN_PASS" | sudo -S systemsetup -settimezone "$VPN_TZ" &>/dev/null && ok "Часовой пояс: $VPN_TZ" || warn "Не смог поставить часовой пояс $VPN_TZ — задай руками в Настройках."
+    # Автоустановку времени по геолокации выключаем, иначе macOS вернет реальный пояс
+    as_root defaults write /Library/Preferences/com.apple.timezone.auto Active -bool NO 2>/dev/null
+    as_root systemsetup -settimezone "$VPN_TZ" &>/dev/null && ok "$(L 'Часовой пояс:' 'Time zone:') $VPN_TZ ($(L 'автоопределение в macOS отключено' 'macOS auto time zone disabled'))" || warn "$(L 'Не смог поставить часовой пояс' 'Could not set time zone') $VPN_TZ"
 fi
 
 # Bluetooth: глушим (второй канал утечки после Wi-Fi)
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.Bluetooth.plist ControllerPowerState -int 0 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S pkill bluetoothd 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.Bluetooth.plist ControllerPowerState -int 0 2>/dev/null
+as_root pkill bluetoothd 2>/dev/null
 ok "Bluetooth выключен (окончательно отключится после перезагрузки — в конце проверим вручную)."
 
 echo ""
@@ -276,19 +360,57 @@ step "ФАЗА 3/6 — Установка приложений"
 DL="$HOME/Downloads/autosetup"
 mkdir -p "$DL"
 
+net_ok() {
+    curl -s --max-time 5 -o /dev/null "https://captive.apple.com/hotspot-detect.html" && return 0
+    curl -s --max-time 5 -o /dev/null "https://www.google.com" && return 0
+    return 1
+}
+
+wait_for_internet() {
+    if net_ok; then return 0; fi
+    warn "Интернета НЕТ. Подключи кабель (Wi-Fi отключен) — жду и проверяю каждые 5 секунд..."
+    echo "[$(date '+%H:%M:%S')] нет интернета, жду подключения" >> "$DLOG"
+    local n=0
+    while ! net_ok; do
+        sleep 5
+        n=$((n + 1))
+        [ $((n % 6)) -eq 0 ] && echo "   ...все еще нет интернета ($((n * 5)) сек), жду."
+    done
+    ok "Интернет появился — продолжаю."
+    echo "[$(date '+%H:%M:%S')] интернет появился" >> "$DLOG"
+}
+
+app_installed() {
+    case "$1" in
+        "FUSE-T")       pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t" ;;
+        "VeraCrypt")    [ -d "/Applications/VeraCrypt.app" ] ;;
+        "Telegram")     [ -d "/Applications/Telegram.app" ] ;;
+        "Sublime Text") [ -d "/Applications/Sublime Text.app" ] ;;
+        "Sphere")       [ -n "$(find /Applications -maxdepth 1 -iname '*sphere*' -o -iname 'ls*.app' 2>/dev/null | head -1)" ] ;;
+        "Tukan")        [ -n "$(find /Applications -maxdepth 1 -iname '*tukan*' 2>/dev/null | head -1)" ] ;;
+        *) return 1 ;;
+    esac
+}
+
 install_dmg() {
     local url="$1" appname="$2" fname="$3"
+    if app_installed "$appname"; then
+        ok "$appname уже установлен — пропускаю."
+        echo "[$(date '+%H:%M:%S')] $appname уже установлен, пропуск" >> "$DLOG"
+        return 0
+    fi
     [ -z "$fname" ] && fname=$(basename "$url")
     local dmg="$DL/$fname"
+    wait_for_internet
     echo "Скачиваю $appname..."
-    curl -L -s -o "$dmg" "$url"
+    run curl -L -s -o "$dmg" "$url"
     if [ ! -f "$dmg" ] || [ ! -s "$dmg" ]; then
         err "$appname не скачался. Поставь вручную позже."
         return 1
     fi
     echo "Устанавливаю $appname..."
     if [[ "$fname" == *.pkg ]]; then
-        echo "$ADMIN_PASS" | sudo -S installer -pkg "$dmg" -target / -quiet
+        as_root installer -pkg "$dmg" -target / >/dev/null
         if [ $? -eq 0 ]; then
             ok "$appname установлен (pkg)."
         else
@@ -301,8 +423,8 @@ install_dmg() {
         local zapp
         zapp=$(find "$DL/unzipped_$appname" -maxdepth 2 -name "*.app" | head -1)
         if [ -n "$zapp" ]; then
-            echo "$ADMIN_PASS" | sudo -S cp -R "$zapp" /Applications/ 2>/dev/null
-            echo "$ADMIN_PASS" | sudo -S xattr -dr com.apple.quarantine "/Applications/$(basename "$zapp")" 2>/dev/null
+            as_root cp -R "$zapp" /Applications/ 2>/dev/null
+            as_root xattr -dr com.apple.quarantine "/Applications/$(basename "$zapp")" 2>/dev/null
             ok "$appname установлен."
         else
             warn "$appname: в архиве нет .app — поставь вручную."
@@ -310,21 +432,26 @@ install_dmg() {
         return 0
     fi
     local mnt
-    mnt=$(echo "$ADMIN_PASS" | sudo -S hdiutil attach "$dmg" -nobrowse -quiet 2>/dev/null | tail -1 | awk -F'\t' '{print $NF}')
+    logcmd hdiutil attach "$dmg" -nobrowse
+    mnt=$(yes | hdiutil attach "$dmg" -nobrowse 2>/dev/null | grep -o '/Volumes/.*' | tail -1)
     if [ -z "$mnt" ]; then
-        mnt=$(hdiutil attach "$dmg" -nobrowse -quiet | tail -1 | awk -F'\t' '{print $NF}')
+        mnt=$(as_root hdiutil attach "$dmg" -nobrowse 2>/dev/null | grep -o '/Volumes/.*' | tail -1)
     fi
     if [ -n "$mnt" ]; then
         app=$(find "$mnt" -maxdepth 1 -name "*.app" | head -1)
         if [ -n "$app" ]; then
-            echo "$ADMIN_PASS" | sudo -S cp -R "$app" /Applications/ 2>/dev/null
-            echo "$ADMIN_PASS" | sudo -S xattr -dr com.apple.quarantine "/Applications/$(basename "$app")" 2>/dev/null
+            as_root cp -R "$app" /Applications/ 2>/dev/null
+            as_root xattr -dr com.apple.quarantine "/Applications/$(basename "$app")" 2>/dev/null
             ok "$appname установлен."
         else
             pkg=$(find "$mnt" -maxdepth 1 -name "*.pkg" | head -1)
             if [ -n "$pkg" ]; then
-                echo "$ADMIN_PASS" | sudo -S installer -pkg "$pkg" -target / -quiet
-                ok "$appname установлен (pkg)."
+                as_root installer -pkg "$pkg" -target / >/dev/null
+                if [ $? -eq 0 ]; then
+                    ok "$appname установлен (pkg)."
+                else
+                    err "$appname: установка pkg не удалась — поставь вручную."
+                fi
             else
                 warn "$appname: внутри dmg нет .app/.pkg — поставь вручную."
             fi
@@ -346,6 +473,26 @@ install_dmg "https://telegram.org/dl/macos/stable" "Telegram"
 
 # Sublime Text
 install_dmg "https://download.sublimetext.com/sublime_text_build_4200_mac.zip" "Sublime Text"
+
+# Sublime Text — программа по умолчанию для текстовых файлов
+if [ -d "/Applications/Sublime Text.app" ]; then
+    SUBL_ID=$(defaults read "/Applications/Sublime Text.app/Contents/Info" CFBundleIdentifier 2>/dev/null)
+    SUBL_ID=${SUBL_ID:-com.sublimetext.4}
+    logcmd defaults write LSHandlers "расширения -> $SUBL_ID"
+    for EXT in txt md markdown csv tsv json xml yaml yml log ini conf cfg env sh py js toml sql; do
+        defaults write com.apple.LaunchServices/com.apple.launchservices.secure LSHandlers -array-add \
+            "{LSHandlerContentTag=\"$EXT\"; LSHandlerContentTagClass=\"public.filename-extension\"; LSHandlerRoleAll=\"$SUBL_ID\";}" 2>/dev/null
+    done
+    for UTI in public.plain-text public.text net.daringfireball.markdown public.comma-separated-values-text; do
+        defaults write com.apple.LaunchServices/com.apple.launchservices.secure LSHandlers -array-add \
+            "{LSHandlerContentType=\"$UTI\"; LSHandlerRoleAll=\"$SUBL_ID\";}" 2>/dev/null
+    done
+    run /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user >/dev/null 2>&1
+    killall Finder 2>/dev/null
+    ok "Sublime Text назначен по умолчанию для txt, md, csv, json, xml, yaml, log, sh и др."
+else
+    warn "Sublime Text не найден в /Applications — назначить его по умолчанию не вышло."
+fi
 
 # Sphere (Linken Sphere) — версия зависит от процессора
 ARCH=$(uname -m)
@@ -375,7 +522,7 @@ else
     echo ""
     echo "   Если спросит пароль еще раз — введи свой пароль от Mac."
     pause
-    FV_OUT=$(echo "$ADMIN_PASS" | sudo -S fdesetup enable -user "$(stat -f%Su /dev/console)" 2>&1)
+    FV_OUT=$(as_root fdesetup enable -user "$(stat -f%Su /dev/console)" 2>&1)
     echo "$FV_OUT" > /dev/tty
     unset FV_OUT
     echo ""
@@ -406,6 +553,50 @@ wait_new_disk() {
     return 1
 }
 
+vc_mounted_vol() {
+    "$VC" --text --list 2>/dev/null | grep -o '/Volumes/.*' | head -1
+}
+
+gui_mount_flow() {
+    MOUNTED_PATH=$(vc_mounted_vol)
+    if [ -n "$MOUNTED_PATH" ]; then
+        ok "Диск уже смонтирован через VeraCrypt: $MOUNTED_PATH"
+    else
+        echo "Диск монтируешь ТЫ САМ через VeraCrypt — я подожду и продолжу автоматически."
+        echo ""
+        echo "  1) Вставь диск (если окно «диск не читается» — жми ИГНОРИРОВАТЬ, не «Инициализировать»!)."
+        echo "  2) В окне VeraCrypt: кнопка «Select Device» -> выбери свой диск."
+        echo "  3) Нажми «Mount», введи пароль (и PIM, если был)."
+        echo ""
+        open -a VeraCrypt 2>/dev/null
+        echo "Жду, пока диск появится (до 15 минут)..."
+        MOUNTED_PATH=""
+        local i
+        for i in $(seq 1 180); do
+            sleep 5
+            MOUNTED_PATH=$(vc_mounted_vol)
+            [ -n "$MOUNTED_PATH" ] && break
+        done
+    fi
+    if [ -z "$MOUNTED_PATH" ]; then
+        err "За 15 минут диск в VeraCrypt так и не появился. Смонтируй его и запусти скрипт заново."
+        SKIP_LINKS=1
+    else
+        VOL_NAME=$(basename "$MOUNTED_PATH")
+        ok "Диск подключен: /Volumes/$VOL_NAME"
+        DATA="/Volumes/$VOL_NAME/DataAPP"
+        mkdir -p "$DATA"
+        if [ ! -d "$DATA" ]; then
+            err "Не смог создать папку на диске ($DATA) — диск только для чтения?"
+            SKIP_LINKS=1
+        fi
+    fi
+}
+
+if [ "$HAVE_DISK" = "да" ]; then
+    gui_mount_flow
+else
+
 echo "Сейчас настроим внешний диск (флешку/SSD) для секретных данных."
 echo ""
 echo "1) Если диск сейчас вставлен в Mac — ВЫТАЩИ его."
@@ -424,7 +615,7 @@ else
     DSIZE=$(echo "$DINFO" | awk -F: '/Disk Size/{print $2}' | xargs | cut -d'(' -f1 | xargs)
     ok "Нашел диск: $DNAME ($DSIZE) на $DISK_DEV"
     read -r -p "Это тот самый диск? (да/нет) [да]: " CONFIRM
-    CONFIRM=${CONFIRM:-да}
+    CONFIRM=$(yn "${CONFIRM:-да}")
     if [ "$CONFIRM" != "да" ]; then
         err "Тогда вытащи лишние диски и запусти скрипт заново."
         SKIP_LINKS=1
@@ -433,13 +624,10 @@ else
         if [ -z "$FS_CHECK" ]; then
             warn "macOS не видит на нем файловую систему — похоже, диск УЖЕ зашифрован VeraCrypt."
             read -r -p "   Это так? Тогда ничего стирать не буду, просто подключу. (да/нет) [да]: " ALREADY
-            ALREADY=${ALREADY:-да}
+            ALREADY=$(yn "${ALREADY:-да}")
             if [ "$ALREADY" = "да" ]; then
                 HAVE_DISK="да"
-                echo "   Введи СУЩЕСТВУЮЩИЙ пароль этого диска:"
-                read -rs -p "   Пароль диска: " DISK_PASS; echo ""
-                read -r -p "   PIM (Enter = без PIM): " DISK_PIM
-                DISK_PIM=${DISK_PIM:-0}
+                gui_mount_flow
             fi
         fi
     fi
@@ -451,7 +639,7 @@ if [ "$SKIP_LINKS" = "0" ] && [ "$HAVE_DISK" != "да" ]; then
     echo ""
     warn "ВСЁ содержимое диска $DNAME будет УНИЧТОЖЕНО."
     read -r -p "Точно продолжаем? (да/нет) [да]: " WIPE_OK
-    WIPE_OK=${WIPE_OK:-да}
+    WIPE_OK=$(yn "${WIPE_OK:-да}")
     if [ "$WIPE_OK" != "да" ]; then
         SKIP_LINKS=1
     else
@@ -461,7 +649,7 @@ if [ "$SKIP_LINKS" = "0" ] && [ "$HAVE_DISK" != "да" ]; then
         # данные приложений (Telegram, Sphere и т.д.) используют права доступа,
         # расширенные атрибуты и симлинки, которые exFAT НЕ хранит — на exFAT
         # приложения ломаются. HFS+ хранит всё как надо на Apple Silicon (M1).
-        echo "$ADMIN_PASS" | sudo -S "$VC" --text --non-interactive --create "$DISK_DEV" --volume-type normal --encryption AES --hash SHA-512 --filesystem "HFS+" --pim "$DISK_PIM" -k "" --password "$DISK_PASS" --random-source /dev/urandom $QUICK
+        as_root "$VC" --text --non-interactive --create "$DISK_DEV" --volume-type normal --encryption AES --hash SHA-512 --filesystem "HFS+" --pim "$DISK_PIM" -k "" --password "$DISK_PASS" --random-source /dev/urandom $QUICK
         if [ $? -ne 0 ]; then
             err "VeraCrypt не смогла зашифровать диск. Запусти скрипт еще раз."
             SKIP_LINKS=1
@@ -471,23 +659,41 @@ if [ "$SKIP_LINKS" = "0" ] && [ "$HAVE_DISK" != "да" ]; then
     fi
 fi
 
-if [ "$SKIP_LINKS" = "0" ]; then
+if [ "$SKIP_LINKS" = "0" ] && [ "$HAVE_DISK" != "да" ]; then
     echo "Подключаю зашифрованный диск..."
     BEFORE_VOL=$(ls /Volumes/)
-    echo "$ADMIN_PASS" | sudo -S "$VC" --text --non-interactive --pim "$DISK_PIM" -k "" --protect-hidden no --password "$DISK_PASS" "$DISK_DEV" >/dev/null 2>&1
+    diskutil unmountDisk "$DISK_DEV" &>/dev/null
+
+    try_mount() {
+        local dev="$1" out
+        out=$(as_root "$VC" --text --non-interactive --pim "$DISK_PIM" -k "" --protect-hidden no --password "$DISK_PASS" "$dev" 2>&1)
+        VC_ERR="$out"
+        local i
+        for i in $(seq 1 10); do
+            sleep 2
+            MOUNTED=$(comm -13 <(echo "$BEFORE_VOL" | sort) <(ls /Volumes/ | sort) | head -1)
+            [ -n "$MOUNTED" ] && return 0
+        done
+        return 1
+    }
+
     MOUNTED=""
-    for i in $(seq 1 15); do
-        sleep 2
-        MOUNTED=$(comm -13 <(echo "$BEFORE_VOL" | sort) <(ls /Volumes/ | sort) | head -1)
-        [ -n "$MOUNTED" ] && break
-    done
+    if ! try_mount "$DISK_DEV"; then
+        # Возможно, зашифрован не весь диск, а раздел (так делает GUI VeraCrypt)
+        for SLICE in $(diskutil list "$DISK_DEV" 2>/dev/null | awk '/disk[0-9]+s[0-9]+/{print "/dev/"$NF}'); do
+            echo "   Пробую раздел $SLICE..."
+            try_mount "$SLICE" && break
+        done
+    fi
+
     if [ -z "$MOUNTED" ]; then
         err "Диск не подключился. Либо пароль/PIM неверный, либо неверный ответ в начале («уже зашифрован?»)."
+        [ -n "$VC_ERR" ] && echo "   Ответ VeraCrypt: $(echo "$VC_ERR" | grep -vi password | tail -3)"
         echo "   Если диск НОВЫЙ (его никогда не шифровали) — запусти скрипт еще раз и ответь «нет»."
         SKIP_LINKS=1
     else
         if [ "$HAVE_DISK" != "да" ] && [ -n "$DISK_NAME" ]; then
-            echo "$ADMIN_PASS" | sudo -S diskutil rename "/Volumes/$MOUNTED" "$DISK_NAME" &>/dev/null
+            as_root diskutil rename "/Volumes/$MOUNTED" "$DISK_NAME" &>/dev/null
             sleep 2
             [ -d "/Volumes/$DISK_NAME" ] && MOUNTED="$DISK_NAME"
         fi
@@ -497,6 +703,8 @@ if [ "$SKIP_LINKS" = "0" ]; then
         mkdir -p "$DATA"
     fi
 fi
+
+fi # конец ветки «диск новый, шифруем с нуля»
 
 # ------------------------------------------------------------
 # ФАЗА 6: ПЕРЕНОС ДАННЫХ + СИМЛИНКИ
@@ -525,6 +733,51 @@ else
         fi
     }
 
+    # --- 0a) ГЛУБОКИЙ ПОИСК: данные могут лежать в ЛЮБОЙ подпапке диска, не только в DataAPP ---
+    DISK_ROOT="/Volumes/$VOL_NAME"
+    deep_find() {
+        logcmd find "$DISK_ROOT" -type d -iname "$1"
+        find "$DISK_ROOT" -maxdepth 8 -type d -iname "$1" \
+            -not -path "$DATA/*" -not -path "*/.Trashes/*" \
+            -not -path "*/.Spotlight-V100/*" -not -path "*/.fseventsd/*" 2>/dev/null | head -1
+    }
+    move_to_data() {
+        local found="$1" rel="$2" dst="$DATA/$2"
+        [ -e "$dst" ] && return 0
+        echo ""
+        echo "Нашел данные в подпапке диска: $found"
+        read -r -p "   Перенести в DataAPP и подключить? (да/нет) [да]: " MV
+        MV=$(yn "${MV:-да}")
+        [ "$MV" != "да" ] && return 1
+        mkdir -p "$(dirname "$dst")"
+        logcmd mv "$found" "$dst"
+        if mv "$found" "$dst" 2>/dev/null; then
+            ok "$rel — перенесено в DataAPP (в пределах диска, быстро)."
+        else
+            err "$rel — не смог перенести из $found (права/занято). Перенеси вручную в $DATA."
+            return 1
+        fi
+    }
+
+    echo "Ищу данные приложений по ВСЕМУ диску (включая подпапки)..."
+    if [ ! -d "$DATA/Telegram/stable" ]; then
+        TG_FOUND=$(deep_find "6N38VWS5BX.ru.keepcoder.Telegram")
+        if [ -n "$TG_FOUND" ] && [ -d "$TG_FOUND/stable" ]; then
+            move_to_data "$TG_FOUND/stable" "Telegram/stable"
+        else
+            TG_FOUND=$(deep_find "stable")
+            if [ -n "$TG_FOUND" ] && [ -e "$TG_FOUND/accounts-metadata" ]; then
+                move_to_data "$TG_FOUND" "Telegram/stable"
+            fi
+        fi
+    fi
+    [ ! -d "$DATA/Sublime Text" ] && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && move_to_data "$ST_FOUND" "Sublime Text"; }
+    [ ! -d "$DATA/app.ls" ] && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && move_to_data "$LS_FOUND" "app.ls"; }
+    if ! find "$DATA" -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
+        TK_FOUND=$(deep_find "*tukan*")
+        [ -n "$TK_FOUND" ] && move_to_data "$TK_FOUND" "$(basename "$TK_FOUND")"
+    fi
+
     # --- 0) TELEGRAM С ФЛЕШКИ: доступа к номеру нет, сессия живет только в этих файлах ---
     TG_ON_DISK="$DATA/Telegram/stable"
     TG_LOCAL="$HOME/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable"
@@ -533,11 +786,11 @@ else
         warn "Данных Telegram нет ни в системе, ни на диске."
         warn "Если доступа к номеру телефона НЕТ — без бэкапа в Telegram ты больше НЕ ВОЙДЕШЬ."
         read -r -p "Есть бэкап папки Telegram на флешке? (да/нет) [да]: " HAVE_BK
-        HAVE_BK=${HAVE_BK:-да}
+        HAVE_BK=$(yn "${HAVE_BK:-да}")
         if [ "$HAVE_BK" = "да" ]; then
             echo "Вставь флешку с бэкапом (секретный диск вытаскивать НЕ нужно)."
             pause
-            BK_SRC=$(find /Volumes -maxdepth 4 -type d -name "6N38VWS5BX.ru.keepcoder.Telegram" 2>/dev/null | grep -v "^/Volumes/$VOL_NAME" | head -1)
+            BK_SRC=$(find /Volumes -maxdepth 8 -type d -name "6N38VWS5BX.ru.keepcoder.Telegram" -not -path "*/.Trashes/*" 2>/dev/null | grep -v "^/Volumes/$VOL_NAME" | head -1)
             if [ -z "$BK_SRC" ]; then
                 warn "Сам не нашел бэкап. Перетащи мышкой папку «6N38VWS5BX.ru.keepcoder.Telegram» в это окно и нажми Enter:"
                 read -r BK_IN
@@ -577,7 +830,7 @@ else
         esac
         echo "Нашел на диске: «$name»"
         read -r -p "   Подключить к системе? (да/нет) [да]: " L
-        L=${L:-да}
+        L=$(yn "${L:-да}")
         [ "$L" != "да" ] && continue
         FOUND=1
         link_to "$src" "$sub"
@@ -624,16 +877,16 @@ fi
 # ------------------------------------------------------------
 step "ОБНОВЛЕНИЯ macOS"
 
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool true 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool true 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool true 2>/dev/null
-echo "$ADMIN_PASS" | sudo -S defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool true 2>/dev/null
 ok "Автообновления включены (система и App Store)."
 
 echo "Проверяю и ставлю обновления macOS — может занять ДОЛГО (не закрывай окно, Mac не трогай)..."
-if echo "$ADMIN_PASS" | sudo -S softwareupdate --install --all --agree-to-license 2>&1 | grep -qi "restart"; then
+if as_root softwareupdate --install --all --agree-to-license 2>&1 | grep -qi "restart"; then
     warn "Обновления скачаны, но требуют перезагрузки — она и так будет в конце проверки."
 else
     ok "Обновления macOS установлены (или их не было)."
@@ -680,5 +933,6 @@ echo "  6. Настройки -> Сеть: Wi-Fi в списке быть не �
 echo "  7. Если бэкап Telegram был на обычной флешке — УДАЛИ его с неё (это полный доступ к телеге)."
 echo ""
 ok "Технический лог (на всякий случай): $LOG"
+ok "Детальный лог всех команд (что и когда выполнялось): $DLOG"
 echo ""
 echo -e "${GREEN}${BOLD}НАСТРОЙКА ЗАВЕРШЕНА. Можно закрыть окно.${NC}"
