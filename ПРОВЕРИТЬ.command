@@ -285,8 +285,11 @@ check_link "$HOME/Library/Application Support/app.ls" "Sphere"
 check_link "$HOME/Library/Safari" "Safari"
 [ -d "/Applications/MailMate.app" ] && check_link "$HOME/Library/Application Support/MailMate" "MailMate"
 [ -d "/Applications/qTox.app" ] && check_link "$HOME/Library/Application Support/Tox" "qTox"
-TUK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
-[ -n "$TUK" ] && check_link "$TUK" "Tukan"
+# Tukan — sandbox: его данные в контейнере (Application Support он не пишет;
+# старые проверки смотрели не туда и видели пустышку)
+[ -e "$HOME/Library/Containers/me.tukan.tukan" ] && check_link "$HOME/Library/Containers/me.tukan.tukan" "Tukan"
+TUK_STRAY=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
+[ -n "$TUK_STRAY" ] && bad "Tukan: лишняя папка в Application Support ($TUK_STRAY) — Tukan туда не пишет; запусти ЗАПУСТИТЬ.command, он уберёт."
 
 # Пользовательские папки (Рабочий стол/Документы/Загрузки) НЕ проверяем:
 # фича их переноса на диск снята — папки остаются в системе как есть.

@@ -24,7 +24,7 @@ NC='\033[0m'
 # Маркер версии: если при запуске НЕ напечаталась строка «ВЕРСИЯ СКРИПТА» ниже —
 # ты запускаешь УСТАРЕВШУЮ копию (в старых та самая гонка, что вешала меню).
 # Проверка без запуска: grep -c SCRIPT_VERSION ЗАПУСТИТЬ.command  (0 = старая)
-readonly SCRIPT_VERSION="v4-2026.08.26 — СНЯТЫ «Недавние» и перенос Desktop/Documents/Downloads (вешали Finder/меню); данные приложений подключаются как раньше"
+readonly SCRIPT_VERSION="v5-2026.08.26 — умный корень данных (EncriptionData/DataAPP по реальным данным, а не по имени), Safari_Data/Tukan-контейнер, запрет стирания при пустой цели"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -1321,28 +1321,38 @@ vc_mounted_vol() {
 #   2) папка, в которой РЕАЛЬНО лежат данные приложений (имя любое);
 #   3) если ничего нет — создаем DataAPP (это первая настройка чистого диска).
 resolve_data_dir() {
-    local vol="$1" found hit
-    found=$(find "$vol" -maxdepth 3 -type d \( -iname "DataAPP" -o -iname "AppData" -o -iname "APPDATA" \) \
-            -not -path "*/.Trashes/*" 2>/dev/null | head -1)
-    if [ -z "$found" ]; then
-        hit=$(find "$vol" -maxdepth 6 -type d \
-              \( -name "$TG_GLOB" -o -name "app.ls" -o -name "Tox" -o -name "MailMate" -o -iname "*tukan*" \) \
-              -not -path "*/.Trashes/*" -not -path "*/.Spotlight-V100/*" 2>/dev/null | head -1)
-        # Для Telegram структура «<папка данных>/Telegram/<контейнер>», для
-        # остальных — «<папка данных>/<имя>»: поднимаемся на нужный уровень.
-        if [ -n "$hit" ]; then
-            found=$(dirname "$hit")
-            case "$(basename "$found")" in
-                Telegram|telegram) found=$(dirname "$found") ;;
-            esac
-        fi
+    local vol="$1" out best h p r
+    # УМНЫЙ ПОИСК КОРНЯ ДАННЫХ: корень — это там, где РЕАЛЬНО лежат данные
+    # приложений, а не «папка с именем DataAPP». Маркеры — известные папки
+    # приложений, ЛЮБЫХ поколений схемы: app.ls, Tox, MailMate (в т.ч. старая
+    # схема *_Data: Safari_Data, MailMate_Data), контейнер Telegram, tukan.
+    # ПУСТЫЕ папки маркерами не считаются (пустышки от старых прогонов
+    # голоса не дают). Побеждает корень, где живет БОЛЬШЕ РАЗНЫХ приложений.
+    out=""
+    for h in $(find "$vol" -maxdepth 6 -type d \
+              \( -name "$TG_GLOB" -o -name "app.ls" -o -name "Tox" \
+                 -o -name "MailMate" -o -name "Safari_Data" -o -iname "*tukan*" \) \
+              -not -path "*/.Trashes/*" -not -path "*/.Spotlight-V100/*" 2>/dev/null); do
+        [ -n "$(ls -A "$h" 2>/dev/null)" ] || continue
+        p=$(dirname "$h"); r="$p"
+        case "$(basename "$h")" in
+            "$TG_GLOB") case "$(basename "$p")" in Telegram|telegram) r=$(dirname "$p") ;; esac ;;
+            MailMate|Safari_Data) case "$(basename "$p")" in *_Data) r=$(dirname "$p") ;; esac ;;
+        esac
+        case "$r" in "$vol"|"$vol"/*) out="$out$r\t$(basename "$h")\n" ;; esac
+    done
+    if [ -n "$out" ]; then
+        best=$(printf '%b' "$out" | awk -F'\t' 'NF==2 && !seen[$1 FS $2]++ {c[$1]++} END {for (r in c) print c[r] "\t" r}' \
+               | sort -rn | head -1 | cut -f2-)
+        [ -n "$best" ] && { echo "$best"; return; }
     fi
-    # Если данные лежат прямо в корне диска — папка данных и есть корень.
-    if [ -z "$found" ]; then
-        found="$vol/DataAPP"
-        mkdir -p "$found" 2>/dev/null
+    # Ничего живого нет: существующая DataAPP, иначе создать (новый чистый диск)
+    if [ -d "$vol/DataAPP" ]; then
+        echo "$vol/DataAPP"
+    else
+        mkdir -p "$vol/DataAPP" 2>/dev/null
+        echo "$vol/DataAPP"
     fi
-    echo "$found"
 }
 
 gui_mount_flow() {
@@ -1512,9 +1522,21 @@ else
         fi
         mkdir -p "$(dirname "$src")"
         if [ -e "$src" ]; then
+            # СТИРАНИЕ ВСЛЕПУЮ ЗАПРЕЩЕНО: фраза «данные уже на диске» была
+            # допущением, а не проверкой. Если цель на диске ПУСТАЯ, а локальная
+            # папка нет — стирать нельзя (так появились пустые DataAPP/Safari и
+            # DataAPP/Tukan при живых данных в другом месте диска).
+            local src_n=0 dst_n=0
+            src_n=$(ls -A "$src" 2>/dev/null | wc -l | tr -d ' ')
+            [ -d "$dst" ] && dst_n=$(ls -A "$dst" 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$dst_n" -eq 0 ] && [ "$src_n" -gt 0 ]; then
+                err "$(basename "$src") — цель на диске ПУСТАЯ, а в системе $src_n объектов. НЕ стираю, симлинк НЕ ставлю."
+                dim "$(L 'Реальные данные лежат в другом месте диска — смотри сообщение ПРОВЕРИТЬ или найди папку вручную.' 'The real data lives elsewhere on the disk — see the ПРОВЕРИТЬ message or locate the folder by hand.')"
+                return 1
+            fi
             # TCC-защищённые папки (~/Library/Safari) rm не трогает без Полного
-            # доступа к диску — раньше «моё» сообщение о стирании печаталось
-            # ВСЕГДА, а ln потом делал вложенный симлинк «Safari/Safari».
+            # доступа к диску — иначе сообщение о стирании печаталось всегда,
+            # а ln потом делал вложенный симлинк «Safari/Safari».
             if rm -rf "$src" 2>/dev/null && [ ! -e "$src" ]; then
                 ok "$(basename "$src"): старая папка из системы стерта (данные уже на диске)."
             else
@@ -1571,6 +1593,9 @@ else
         ok "$2 — $(L 'уже подключен симлинком, пропускаю.' 'already linked with a symlink, skipping.')"
         return 0
     }
+    # директория существует И НЕ ПУСТАЯ — пустышки от старых прогонов данными
+    # не считаются и не должны глушить поиск по всему диску
+    data_ready() { [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]; }
     echo "$(L 'Ищу данные приложений по ВСЕМУ диску (включая подпапки) — переносить никуда не буду.' 'Scanning the whole disk (all subfolders) — nothing will be moved.')"
     # Чистка после старой версии скрипта: Safari по ошибке линковался в
     # Application Support/Safari (лишний симлинк не туда) — убираю, если есть.
@@ -1581,7 +1606,7 @@ else
     TG_SRC="$(tg_local_dir)/stable"
     if already_linked "$TG_SRC" "Telegram"; then
         :
-    elif [ ! -d "$DATA/Telegram/stable" ]; then
+    elif ! data_ready "$DATA/Telegram/stable"; then
         TG_FOUND=$(deep_find "$TG_GLOB")
         if [ -n "$TG_FOUND" ] && [ -d "$TG_FOUND/stable" ]; then
             link_in_place "$TG_FOUND/stable" "$TG_SRC"
@@ -1592,17 +1617,28 @@ else
             fi
         fi
     fi
-    already_linked "$HOME/Library/Application Support/Sublime Text" "Sublime Text" || { [ ! -d "$DATA/Sublime Text" ] && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }; }
-    already_linked "$HOME/Library/Safari" "Safari" || { [ ! -d "$DATA/Safari" ] && { SF_FOUND=$(deep_find "Safari"); [ -n "$SF_FOUND" ] && { osascript -e 'quit app "Safari"' 2>/dev/null; sleep 1; link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }; }; }
-    already_linked "$HOME/Library/Application Support/app.ls" "Linken Sphere" || { [ ! -d "$DATA/app.ls" ] && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }; }
-    already_linked "$HOME/Library/Application Support/MailMate" "MailMate" || { [ ! -d "$DATA/MailMate" ] && { MM_FOUND=$(deep_find "MailMate"); [ -n "$MM_FOUND" ] && link_in_place "$MM_FOUND" "$HOME/Library/Application Support/MailMate"; }; }
-    already_linked "$HOME/Library/Application Support/Tox" "Tox (qTox)" || { [ ! -d "$DATA/Tox" ] && { TOX_FOUND=$(deep_find "Tox"); [ -n "$TOX_FOUND" ] && link_in_place "$TOX_FOUND" "$HOME/Library/Application Support/Tox"; }; }
-    TK_LINKED=$(find "$HOME/Library/Application Support" -maxdepth 1 -type l -iname "*tukan*" 2>/dev/null | head -1)
-    if [ -n "$TK_LINKED" ]; then
-        ok "Tukan — $(L 'уже подключен симлинком, пропускаю.' 'already linked with a symlink, skipping.')"
-    elif ! find "$DATA" -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
+    already_linked "$HOME/Library/Application Support/Sublime Text" "Sublime Text" || { ! data_ready "$DATA/Sublime Text" && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }; }
+    # Safari_ или Safari_: ищем по маске Safari* — на старых дисках папка
+    # называется Safari_Data (точное имя «Safari» её пропускало → линковалась
+    # пустышка DataAPP/Safari при живых закладках в Safari_Data)
+    already_linked "$HOME/Library/Safari" "Safari" || { ! data_ready "$DATA/Safari_Data" && ! data_ready "$DATA/Safari" && { SF_FOUND=$(deep_find "Safari*"); [ -n "$SF_FOUND" ] && { osascript -e 'quit app "Safari"' 2>/dev/null; sleep 1; link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }; }; }
+    already_linked "$HOME/Library/Application Support/app.ls" "Linken Sphere" || { ! data_ready "$DATA/app.ls" && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }; }
+    already_linked "$HOME/Library/Application Support/MailMate" "MailMate" || { ! data_ready "$DATA/MailMate" && ! data_ready "$DATA/MailMate_Data" && { MM_FOUND=$(deep_find "MailMate"); [ -n "$MM_FOUND" ] && link_in_place "$MM_FOUND" "$HOME/Library/Application Support/MailMate"; }; }
+    already_linked "$HOME/Library/Application Support/Tox" "Tox (qTox)" || { ! data_ready "$DATA/Tox" && { TOX_FOUND=$(deep_find "Tox"); [ -n "$TOX_FOUND" ] && link_in_place "$TOX_FOUND" "$HOME/Library/Application Support/Tox"; }; }
+    # Tukan — sandbox-приложение: его данные живут в КОНТЕЙНЕРЕ
+    # ~/Library/Containers/me.tukan.tukan, а НЕ в Application Support.
+    # Старые версии скрипта линковали Application Support → туда Tukan не
+    # пишет → на диске оказывалась пустышка. Убираем мёртвые заглушки и
+    # линкуем правильное место.
+    for stray in $(find "$HOME/Library/Application Support" -maxdepth 1 -type l -iname "*tukan*" 2>/dev/null); do
+        rm -f "$stray" 2>/dev/null && dim "$(L 'Убрал мёртвый симлинк Tukan (Tukan туда не пишет):' 'Removed a dead Tukan symlink (Tukan never writes there):') $(basename "$stray")"
+    done
+    TK_C="$HOME/Library/Containers/me.tukan.tukan"
+    if already_linked "$TK_C" "Tukan"; then
+        :
+    elif ! find "$DATA" -maxdepth 2 -iname "*tukan*" 2>/dev/null | grep -q .; then
         TK_FOUND=$(deep_find "*tukan*")
-        [ -n "$TK_FOUND" ] && link_in_place "$TK_FOUND" "$HOME/Library/Application Support/$(basename "$TK_FOUND")"
+        [ -n "$TK_FOUND" ] && link_in_place "$TK_FOUND" "$TK_C"
     fi
 
     # --- 0) TELEGRAM С ФЛЕШКИ: доступа к номеру нет, сессия живет только в этих файлах ---
@@ -1790,7 +1826,7 @@ else
     # ЗАКРЫТЬ, иначе он держит файлы. Папка ~/Library/Safari защищена системой (TCC):
     # если копирование не пройдёт — Терминалу нужен «Полный доступ к диску».
     osascript -e 'quit app "Safari"' 2>/dev/null; sleep 2
-    ensure_app "$HOME/Library/Safari" "Safari" "Safari"
+    ensure_app "$HOME/Library/Safari" "Safari_Data" "Safari"
 
     # MailMate: почта (Messages) и настройки аккаунтов — только на диске
     if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ] || [ -e "$HOME/Library/Application Support/MailMate" ]; then
@@ -1802,15 +1838,10 @@ else
         ensure_app "$HOME/Library/Application Support/Tox" "Tox"
     fi
 
-    TUKAN_DIR=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
-    if [ -n "$TUKAN_DIR" ]; then
-        ensure_app "$TUKAN_DIR" "$(basename "$TUKAN_DIR")" "Tukan"
-    elif find /Applications -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
-        # Tukan установлен, но данных нет — предложим запустить, чтобы создалась папка
-        ensure_app "$HOME/Library/Application Support/Tukan" "Tukan" "Tukan"
-    else
-        warn "Tukan: папка не найдена. Запусти Tukan один раз и перезапусти скрипт."
-    fi
+    # Tukan (sandbox): данные — контейнер, см. блок выше; имя на диске —
+    # Tukan_Data/me.tukan.tukan (в старой *_Data-схеме корня данных)
+    TUKAN_DIR="$HOME/Library/Containers/me.tukan.tukan"
+    ensure_app "$TUKAN_DIR" "Tukan_Data/me.tukan.tukan" "Tukan"
 
     # --- 3) ПОЛЬЗОВАТЕЛЬСКИЕ ПАПКИ (Рабочий стол/Документы/Загрузки) ---
     # ФИЧА СНЯТА решением владельца: подмена этих папок симлинками на диск
