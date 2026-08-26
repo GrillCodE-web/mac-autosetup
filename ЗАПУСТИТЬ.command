@@ -21,12 +21,50 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-ok()   { echo -e "  ${GREEN}${BOLD}✔${NC}  $1"; }
+# --- Визуальный каркас -----------------------------------------------------
+# Ширина окна Терминала (линии и баннеры подстраиваются под окно, 60..120)
+tw() {
+    local w
+    w=$(tput cols 2>/dev/null) || w=${COLUMNS:-80}
+    case "$w" in ''|*[!0-9]*) w=80 ;; esac
+    [ "$w" -lt 60 ] && w=60
+    [ "$w" -gt 120 ] && w=120
+    echo "$w"
+}
+
+# Повторить символ N раз: rep "─" 20
+rep() { local s="$1" n="$2"; while [ "$n" -gt 0 ]; do printf '%s' "$s"; n=$((n - 1)); done; }
+
+# Секунды -> ММ:СС (больше часа -> Ч:ММ:СС)
+t2s() {
+    local s="$1"
+    if [ "$s" -ge 3600 ]; then
+        printf '%d:%02d:%02d' $((s / 3600)) $(( (s % 3600) / 60 )) $((s % 60))
+    else
+        printf '%02d:%02d' $((s / 60)) $((s % 60))
+    fi
+}
+
+# Спиннер для ожиданий: вызывай раз в тик с одним текстом, в конце — spin_end.
+# Пишет в ту же строку (\r), поэтому во время ожидания НИЧЕГО другое не печатать.
+SPIN_N=0
+spin() {
+    local f='|/-\' c
+    c=${f:$SPIN_N:1}
+    SPIN_N=$(( (SPIN_N + 1) % 4 ))
+    printf '\033[2K  %s  %s ...\r' "$c" "$1"
+}
+spin_end() { printf '\033[2K'; }
+
+ok()   { echo -e "  ${GREEN}${BOLD}✓${NC}  $1"; }
 warn() { echo -e "  ${YELLOW}${BOLD}▲${NC}  $1"; }
-err()  { echo -e "  ${RED}${BOLD}✖${NC}  $1"; }
+err()  { echo -e "  ${RED}${BOLD}✗${NC}  $1"; }
 info() { echo -e "  ${BLUE}${BOLD}•${NC}  $1"; }
-dim()  { echo -e "     ${GREY}$1${NC}"; }
-hr()   { echo -e "${GREY}   ────────────────────────────────────────────────────────${NC}"; }
+dim()  { echo -e "  ${GREY}· $1${NC}"; }
+sub()  { echo ""; echo -e "  ${BOLD}${CYAN}▸${NC} ${BOLD}$1${NC}"; }
+
+# hr — тонкая серая линия на всю ширину окна
+hr()   { echo -e "  ${GREY}$(rep "─" $(($(tw) - 4)))${NC}"; }
 
 # Папка Telegram называется по-разному в разных сборках: префикс команды
 # (6N38VWS5BX. и др.) может отличаться. Поэтому везде ищем по хвосту имени.
@@ -55,16 +93,28 @@ run() { "$@"; }
 as_root() { printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; }
 
 step() {
-    local t="$1"
+    local t="$1" w
+    w=$(tw)
     echo ""
-    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-    echo -e "  ${BOLD}${CYAN}▎${NC}${BOLD} $t${NC}"
-    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${GREY}─── $(t2s $SECONDS) $(rep "─" $((w - 10)))${NC}"
+    echo -e "  ${CYAN}${BOLD}▎${NC} ${BOLD}$t${NC}"
+    echo -e "  ${GREY}$(rep "─" $w)${NC}"
 }
 
 ask() {
     echo ""
     echo -e "${BOLD}${YELLOW}?${NC} ${BOLD}$1${NC}"
+}
+
+# Заголовок вопроса: q 3 "Внешний диск для секретных данных:"
+q() {
+    echo -e "  ${CYAN}${BOLD}[$1]${NC} ${BOLD}$2${NC}"
+}
+
+pause() {
+    echo ""
+    echo -e "  ${YELLOW}${BOLD}⏎${NC}  ${BOLD}$(L 'Когда сделаешь — нажми Enter' 'When done — press Enter')${NC}"
+    read -r
 }
 
 pause() {
@@ -83,23 +133,77 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 chmod +x "$SCRIPT_DIR/ПРОВЕРИТЬ.command" 2>/dev/null
 
+# Пока идёт настройка — НЕ давать Mac гасить экран и засыпать. Иначе на долгих
+# скачиваниях/обновлениях экран темнеет, человек думает «всё зависло/выключилось»
+# и трогает Mac. caffeinate держит экран и систему включёнными до конца скрипта.
+caffeinate -dimsu &
+CAFFEINATE_PID=$!
+trap 'kill "$CAFFEINATE_PID" 2>/dev/null' EXIT
+
 clear
 
+TITLE_W=$(tw)
 echo ""
-echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-echo -e "   ${BOLD}АВТОНАСТРОЙКА И ЗАЩИТА MAC  /  MAC SETUP & HARDENING${NC}"
-echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+echo -e "  ${CYAN}$(rep "━" "$TITLE_W")${NC}"
+echo -e "  ${CYAN}▎${NC}${BOLD}  АВТОНАСТРОЙКА И ЗАЩИТА MAC${NC}"
+echo -e "  ${CYAN}▎${NC}  ${GREY}MAC SETUP & HARDENING${NC}"
+echo -e "  ${CYAN}$(rep "━" "$TITLE_W")${NC}"
+echo -e "  ${GREY}macOS $(sw_vers -productVersion 2>/dev/null) · $(sysctl -n hw.model 2>/dev/null) · $(date '+%d.%m.%Y %H:%M')${NC}"
 echo ""
 info "$(L 'Скрипт настроит этот Mac сам — просто следуй экрану.' 'The script sets this Mac up on its own — just follow the screen.')"
 info "$(L 'Сначала несколько вопросов, потом всё идет без тебя.' 'A few questions first, then it runs unattended.')"
 dim "$(L 'Логи не ведутся — никаких следов в системе не остается.' 'No logs are written — no traces left in the system.')"
 
 # ------------------------------------------------------------
+# ПРОВЕРКА СНАЧАЛА — ДО ВСЕХ ВОПРОСОВ (ничего не меняем, только смотрим)
+# ------------------------------------------------------------
+# 1) Какие приложения УЖЕ установлены — про них вопросы не задаются.
+# 2) Какие данные УЖЕ подключены симлинками — про них тоже не спрашиваем.
+step "ПРОВЕРКА (до вопросов): что уже установлено и подключено"
+
+app_check() { [ -d "/Applications/$1.app" ]; }
+MM_INSTALLED=нет;    app_check "MailMate"        && MM_INSTALLED=да
+QTOX_INSTALLED=нет;  app_check "qTox"            && QTOX_INSTALLED=да
+EXCEL_INSTALLED=нет; app_check "Microsoft Excel" && EXCEL_INSTALLED=да
+
+sub "$(L 'Приложения' 'Apps')"
+show_app() {
+    if [ "$2" = "да" ]; then ok "$1 — $(L 'уже установлен' 'already installed')"
+    else dim "$1 — $(L 'не установлен' 'not installed')"; fi
+}
+A_VC=нет;  app_check "VeraCrypt"    && A_VC=да
+A_TG=нет;  app_check "Telegram"     && A_TG=да
+A_ST=нет;  app_check "Sublime Text" && A_ST=да
+show_app "VeraCrypt" "$A_VC"; show_app "Telegram" "$A_TG"; show_app "Sublime Text" "$A_ST"
+show_app "MailMate" "$MM_INSTALLED"; show_app "qTox" "$QTOX_INSTALLED"; show_app "Microsoft Excel" "$EXCEL_INSTALLED"
+
+sub "$(L 'Данные приложений (симлинки)' 'App data (symlinks)')"
+precheck_link() {
+    local label="$1" path="$2"
+    if [ -L "$path" ]; then
+        ok "$label — $(L 'уже симлинк (подключён к диску)' 'already a symlink (linked to disk)')"
+    elif [ -e "$path" ]; then
+        info "$label — $(L 'обычная папка в системе (перенесу на диск и заменю симлинком)' 'plain folder in system (will move to disk and replace with a symlink)')"
+    else
+        dim "$label — $(L 'данных пока нет' 'no data yet')"
+    fi
+}
+precheck_link "Telegram"      "$(tg_local_dir)/stable"
+precheck_link "Sublime Text"  "$HOME/Library/Application Support/Sublime Text"
+precheck_link "Linken Sphere" "$HOME/Library/Application Support/app.ls"
+precheck_link "Safari"        "$HOME/Library/Safari"
+precheck_link "MailMate"      "$HOME/Library/Application Support/MailMate"
+precheck_link "Tox (qTox)"    "$HOME/Library/Application Support/Tox"
+TUKAN_PRECHECK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
+precheck_link "Tukan"         "${TUKAN_PRECHECK:-$HOME/Library/Application Support/Tukan}"
+dim "$(L 'Это только осмотр — данные подключаются на Фазе 6, когда диск смонтирован.' 'This is just a look — data is linked in Phase 6 once the disk is mounted.')"
+
+# ------------------------------------------------------------
 # ВОПРОСЫ В НАЧАЛЕ (чтобы потом не отвлекать)
 # ------------------------------------------------------------
 step "ВОПРОСЫ (один раз, в начале)"
 
-echo "1) Создать ОТДЕЛЬНУЮ рабочую учетную запись (вторая, кроме основной)?"
+q 1 "Создать ОТДЕЛЬНУЮ рабочую учетную запись (вторая, кроме основной)?"
 echo "   НЕТ — проще: одна учетка, один пароль, запутаться невозможно."
 echo "   ДА  — чуть безопаснее, но будет две учетки и два пароля."
 read -r -p "   (да/нет) [нет]: " CREATE_USER
@@ -127,7 +231,7 @@ if [ "$CREATE_USER" = "да" ]; then
 fi
 
 echo ""
-echo "2) Пароль от этого Mac (тот, что задал при первой настройке):"
+q 2 "Пароль от этого Mac (тот, что задал при первой настройке):"
 read -rs -p "   Пароль администратора: " ADMIN_PASS; echo ""
 
 # Проверяем sudo сразу
@@ -138,8 +242,27 @@ if [ $? -ne 0 ]; then
 fi
 ok "Пароль администратора верный."
 
+# ВОТ ЧТО ГАСИЛО ЭКРАН И «ПЕРЕЗАГРУЖАЛО» ПОСРЕДИ РАБОТЫ (пока ждёшь Enter
+# или идёт скачивание, а ты Mac не трогаешь):
+# 1) АВТОВЫХОД (AutoLogOutDelay) — раньше включался в Фазе 2, и через 30 мин
+#    бездействия macOS РАЗЛОГИНИВАЛА: экран гас, скрипт убивался, выкидывало на
+#    экран входа — выглядит как перезагрузка. caffeinate от этого НЕ спасает.
+# 2) ЗАСТАВКА + «пароль сразу» — заставка стартует по своему таймеру бездействия
+#    (caffeinate её тоже не держит), экран гаснет и требует пароль.
+# Поэтому НА ВРЕМЯ РАБОТЫ скрипта убираем оба, а твои выборы применим В КОНЦЕ.
+as_root defaults delete /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null
+SAVED_SS_IDLE=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null)
+defaults -currentHost write com.apple.screensaver idleTime -int 0 2>/dev/null
+ok "На время настройки: автовыход и заставка ВЫКЛЮЧЕНЫ — экран не погаснет и из системы не выкинет."
+
+# АвтоУСТАНОВКУ обновлений macOS гасим СРАЗУ и держим выключенной до конца: с
+# включенным ключом macOS сама ставит скачанное обновление и САМА перезагружается,
+# когда ей вздумается — в том числе посреди настройки, до/во время скачиваний.
+# Автопроверку и автоскачивание не трогаем (перезагрузок они не вызывают).
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false 2>/dev/null
+
 echo ""
-echo "3) Внешний диск (флешка/SSD) для секретных данных:"
+q 3 "Внешний диск (флешка/SSD) для секретных данных:"
 echo "   У большинства он УЖЕ зашифрован и с данными — поэтому по умолчанию стоит «да»."
 echo "   «да»  = НИЧЕГО не стирать, просто подключить диск."
 echo "   «нет» = диск будет СТЕРТ начисто и зашифрован заново!"
@@ -190,7 +313,7 @@ state_tz() {
 }
 
 echo ""
-echo "4) $(L 'Часовой пояс под VPN (чтобы часы не палили реальное место).' 'Time zone matching your VPN (so the clock does not leak your real location).')"
+q 4 "$(L 'Часовой пояс под VPN (чтобы часы не палили реальное место).' 'Time zone matching your VPN (so the clock does not leak your real location).')"
 echo "   $(L 'Определяю штат по текущему IP...' 'Detecting US state from current IP...')"
 IP_STATE=$(curl -s --max-time 8 "https://ipapi.co/region_code" 2>/dev/null)
 [[ "$IP_STATE" =~ ^[A-Z]{2}$ ]] || IP_STATE=$(curl -s --max-time 8 "http://ip-api.com/line/?fields=region" 2>/dev/null)
@@ -216,7 +339,7 @@ else
 fi
 
 echo ""
-echo "5) $(L 'Через сколько ГАСИТЬ ЭКРАН (сон дисплея).' 'Display sleep timeout.')"
+q 5 "$(L 'Через сколько ГАСИТЬ ЭКРАН (сон дисплея).' 'Display sleep timeout.')"
 echo "   1 — 1 $(L 'мин' 'min')   2 — 2 $(L 'мин' 'min')   3 — 5 $(L 'мин' 'min') ($(L 'по умолчанию' 'default'))"
 echo "   4 — 10 $(L 'мин' 'min')  5 — 15 $(L 'мин' 'min')  6 — 30 $(L 'мин' 'min')  7 — $(L 'никогда' 'never')"
 read -r -p "   $(L 'Выбор' 'Choice') [3]: " DS_CH
@@ -227,7 +350,7 @@ case "${DS_CH:-3}" in
 esac
 
 echo ""
-echo "6) $(L 'Через сколько АВТОВЫХОД из системы (бездействие).' 'Auto logout after idle.')"
+q 6 "$(L 'Через сколько АВТОВЫХОД из системы (бездействие).' 'Auto logout after idle.')"
 echo "   1 — 5 $(L 'мин' 'min')   2 — 10 $(L 'мин' 'min')  3 — 15 $(L 'мин' 'min')"
 echo "   4 — 30 $(L 'мин' 'min') ($(L 'по умолчанию' 'default'))  5 — 60 $(L 'мин' 'min')  6 — $(L 'выключить' 'off')"
 read -r -p "   $(L 'Выбор' 'Choice') [4]: " AL_CH
@@ -238,7 +361,7 @@ case "${AL_CH:-4}" in
 esac
 
 echo ""
-echo "7) $(L 'Раскладки клавиатуры: английская + русская.' 'Keyboard layouts: English + Russian.')"
+q 7 "$(L 'Раскладки клавиатуры: английская + русская.' 'Keyboard layouts: English + Russian.')"
 echo "   $(L 'Сочетание для переключения:' 'Switch shortcut:')"
 echo "   1 — Ctrl + Space ($(L 'по умолчанию' 'default'))"
 echo "   2 — Option(Alt) + Space"
@@ -253,15 +376,49 @@ case "$KB_CH" in
 esac
 
 echo ""
-echo "8) $(L 'Дополнительные программы (по желанию).' 'Optional extra apps.')"
+q 8 "$(L 'Дополнительные программы (по желанию).' 'Optional extra apps.')"
 echo "   $(L 'Их данные тоже уедут на зашифрованный диск (симлинками).' 'Their data also goes to the encrypted disk (via symlinks).')"
-read -r -p "   $(L 'Ставить MailMate (почтовый клиент)? (да/нет) [нет]' 'Install MailMate (email client)? (yes/no) [no]'): " INSTALL_MM
-INSTALL_MM=$(yn "${INSTALL_MM:-нет}")
-read -r -p "   $(L 'Ставить qTox (мессенджер Tox)? (да/нет) [нет]' 'Install qTox (Tox messenger)? (yes/no) [no]'): " INSTALL_QTOX
-INSTALL_QTOX=$(yn "${INSTALL_QTOX:-нет}")
+# Про то, что уже установлено (проверено выше, до вопросов) — не спрашиваем.
+if [ "$MM_INSTALLED" = "да" ]; then
+    INSTALL_MM=да
+    ok "MailMate $(L 'уже установлен — не спрашиваю.' 'already installed — not asking.')"
+else
+    read -r -p "   $(L 'Ставить MailMate (почтовый клиент)? (да/нет) [нет]' 'Install MailMate (email client)? (yes/no) [no]'): " INSTALL_MM
+    INSTALL_MM=$(yn "${INSTALL_MM:-нет}")
+fi
+if [ "$QTOX_INSTALLED" = "да" ]; then
+    INSTALL_QTOX=да
+    ok "qTox $(L 'уже установлен — не спрашиваю.' 'already installed — not asking.')"
+else
+    read -r -p "   $(L 'Ставить qTox (мессенджер Tox)? (да/нет) [нет]' 'Install qTox (Tox messenger)? (yes/no) [no]'): " INSTALL_QTOX
+    INSTALL_QTOX=$(yn "${INSTALL_QTOX:-нет}")
+fi
+if [ "$EXCEL_INSTALLED" = "да" ]; then
+    INSTALL_EXCEL=да
+    ok "Microsoft Excel $(L 'уже установлен — не спрашиваю.' 'already installed — not asking.')"
+else
+    read -r -p "   $(L 'Ставить Microsoft Excel? (да/нет) [да]' 'Install Microsoft Excel? (yes/no) [yes]'): " INSTALL_EXCEL
+    INSTALL_EXCEL=$(yn "${INSTALL_EXCEL:-да}")
+fi
+
+echo ""
+q 9 "$(L 'Что делать с Wi-Fi (второй канал утечки после Bluetooth).' 'What to do with Wi-Fi (a leak channel like Bluetooth).')"
+echo "   1) $(L 'удалить службу Wi-Fi НАВСЕГДА — только кабель (рекомендуется)' 'remove the Wi-Fi service FOREVER — cable only (recommended)')"
+echo "   2) $(L 'только выключить радиомодуль (службу оставить, легко вернуть)' 'just power the radio off (keep the service, easy to bring back)')"
+echo "   3) $(L 'не трогать Wi-Fi' 'leave Wi-Fi as is')"
+read -r -p "   $(L 'Выбор' 'Choice') [1]: " WIFI_MODE
+WIFI_MODE=${WIFI_MODE:-1}
+
+echo ""
+q 10 "$(L 'Данные приложений (Telegram, Sphere, Safari и т.д.) на зашифрованный диск.' 'App data (Telegram, Sphere, Safari, etc.) onto the encrypted disk.')"
+echo "    $(L 'ДА  — подключать всё найденное симлинками САМ, не спрашивая по каждому (рекомендуется).' 'YES — link everything found automatically, without asking about each one (recommended).')"
+echo "    $(L 'НЕТ — спрашивать по каждому приложению отдельно.' 'NO  — ask about each app separately.')"
+read -r -p "   $(L '(да/нет) [да]' '(yes/no) [yes]'): " AUTO_LINK
+AUTO_LINK=$(yn "${AUTO_LINK:-да}")
 
 echo ""
 ok "$(L 'Все вопросы заданы. Дальше скрипт работает сам (пару раз попросит вставить диск).' 'All questions done. The script runs on its own now (it will ask to insert the disk a couple of times).')"
+hr
 
 # ------------------------------------------------------------
 # ФАЗА 1: УЧЕТНАЯ ЗАПИСЬ
@@ -301,23 +458,28 @@ else
     warn "Пароль при блокировке: задан старым способом — в конце проверь руками (пункт в списке доделок)."
 fi
 
-# Выключение дисплея (выбрано в вопросе 5; 0 = никогда)
+# Выключение дисплея (выбрано в вопросе 5; 0 = никогда).
+# ВАЖНО: сам таймер гашения экрана применяем В КОНЦЕ скрипта. Если поставить его
+# сейчас, то на долгих скачиваниях/обновлениях экран погаснет прямо во время
+# настройки и будет казаться, что Mac выключился. Пока идёт работа — экран держит
+# включённым caffeinate (запущен в начале), а твой выбор применится в самом финале.
 DISPLAY_SLEEP=${DISPLAY_SLEEP:-5}
-as_root pmset -a displaysleep "$DISPLAY_SLEEP" &>/dev/null
 if [ "$DISPLAY_SLEEP" = "0" ]; then
-    ok "$(L 'Дисплей не гаснет по таймеру (выбрано «никогда»).' 'Display never sleeps (you chose never).')"
+    ok "$(L 'Дисплей не будет гаснуть по таймеру (применю в конце).' 'Display will never sleep (applied at the end).')"
 else
-    ok "$(L 'Дисплей выключается через' 'Display sleeps after') $DISPLAY_SLEEP $(L 'мин.' 'min.')"
+    ok "$(L 'Таймер гашения экрана' 'Display sleep timer') $DISPLAY_SLEEP $(L 'мин — применю в конце (сейчас экран держу включённым).' 'min — applied at the end (screen kept awake for now).')"
 fi
 
-# Автовыход из системы (выбрано в вопросе 6; 0 = выключить)
+# Автовыход из системы (выбрано в вопросе 6; 0 = выключить).
+# ВАЖНО: применяем В КОНЦЕ скрипта, а не сейчас. Если включить сейчас, то через
+# 30 минут бездействия (пока качается/шифруется или ты отошёл от «нажми Enter»)
+# macOS РАЗЛОГИНИТ прямо посреди настройки — экран гаснет, скрипт умирает,
+# и это выглядит как перезагрузка.
 AUTOLOGOUT_MIN=${AUTOLOGOUT_MIN:-30}
 if [ "$AUTOLOGOUT_MIN" = "0" ]; then
-    as_root defaults delete /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null
-    ok "$(L 'Автовыход из системы выключен.' 'Auto logout is off.')"
+    ok "$(L 'Автовыход из системы будет выключен.' 'Auto logout will be off.')"
 else
-    as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int $((AUTOLOGOUT_MIN * 60))
-    ok "$(L 'Автовыход из системы через' 'Auto logout after') $AUTOLOGOUT_MIN $(L 'мин.' 'min.')"
+    ok "$(L 'Автовыход через' 'Auto logout after') $AUTOLOGOUT_MIN $(L 'мин — применю в самом конце (сейчас он бы выкинул из системы посреди настройки).' 'min — applied at the very end (right now it would log you out mid-setup).')"
 fi
 
 # Раскладки клавиатуры: английская (уже есть) + русская, и сочетание переключения
@@ -344,21 +506,29 @@ add_layout() {
 add_layout AppleEnabledInputSources "U.S." 0
 add_layout AppleEnabledInputSources "Russian" 19456
 add_layout AppleInputSourceHistory "Russian" 19456
+# Запись в plist сама по себе не «оживает»: cfprefsd держит домен HIToolbox в
+# памяти, поэтому в файле раскладка есть, а в меню строки меню — нет. Сбрасываем
+# кэш и просим систему перечитать источники ввода, иначе проверка врет «зеленым».
+killall cfprefsd 2>/dev/null
+sleep 1
+/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null
 if defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q "Russian"; then
-    ok "$(L 'Раскладки: английская (U.S.) + русская — обе на месте.' 'Layouts: English (U.S.) + Russian — both present.')"
+    ok "$(L 'Русская раскладка записана. ПРОВЕРЬ флажок раскладки в строке меню — если её там нет, добавь через + (открою настройки).' 'Russian layout written. CHECK the layout flag in the menu bar — if it is missing, add it via + (I will open settings).')"
     KB_ADDED=1
 else
     warn "$(L 'macOS не принял раскладку из терминала. Открою настройки — добавь русскую сам, я подожду.' 'macOS refused the layout from the terminal. Opening settings — add Russian yourself, I will wait.')"
     open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null
     KB_TRY=0
+    SPIN_N=0
     while [ $KB_TRY -lt 40 ]; do
         sleep 3
         KB_TRY=$((KB_TRY + 1))
         if defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q "Russian"; then
             KB_ADDED=1; break
         fi
-        [ $((KB_TRY % 10)) -eq 0 ] && dim "$(L 'жду русскую раскладку...' 'waiting for the Russian layout...')"
+        spin "$(L 'жду русскую раскладку' 'waiting for the Russian layout') — $((KB_TRY * 3)) сек"
     done
+    spin_end
     if [ "$KB_ADDED" = "1" ]; then
         ok "$(L 'Русская раскладка появилась.' 'Russian layout is now present.')"
     else
@@ -437,6 +607,40 @@ as_root "$FW" --setblockall off &>/dev/null
 as_root "$FW" --setstealthmode on &>/dev/null
 ok "Брандмауэр: включен + режим невидимости (блок ВСЕХ входящих выключен — он ломает VeraCrypt/FUSE-T)."
 
+# Общий экран / Удалённое управление (ARD) / Удалённый вход (SSH) — глушим.
+# Это прямые каналы удалённого доступа к Mac.
+# ПОЧЕМУ ЗДЕСЬ Mac «тупо уходил в перезагрузку» ещё ДО скачиваний: прежний
+# вариант выгружал демоны через launchctl bootout, а на свежих macOS bootout
+# демона Общего экрана валит GUI-сессию (WindowServer): экран гаснет, всё
+# закрывается и перезапускается — выглядит ровно как перезагрузка. Плюс, если
+# этот Mac сейчас смотрят ЧЕРЕЗ Общий экран/ARD, kill/bootout демона обрывает
+# то самое соединение посреди настройки. Поэтому:
+#   - launchctl disable (выключает службу насовсем) — безопасно, делаем всегда;
+#   - демоны глушим мягко (pkill/kickstart) и ТОЛЬКО когда нет активного сеанса;
+#   - launchctl bootout для экрана/ARD — ЗАПРЕЩЁН, он и «перезагружал» Mac.
+SS_SESSION=0
+pgrep -x ScreensharingAgent >/dev/null 2>&1 && SS_SESSION=1
+as_root launchctl disable "system/com.apple.screensharing" 2>/dev/null
+as_root launchctl disable "system/com.apple.RemoteDesktop.agent" 2>/dev/null
+# SSH: systemsetup может спросить подтверждение, отвечаем «yes» прямо в stdin.
+# (Прежний запасной вариант «echo yes | as_root ...» не работал: as_root подменяет
+# stdin, и «yes» до systemsetup не доезжал.)
+printf '%s\nyes\n' "$ADMIN_PASS" | sudo -S systemsetup -setremotelogin off 2>/dev/null
+if [ "$SS_SESSION" = "1" ]; then
+    warn "$(L 'Сейчас идёт АКТИВНЫЙ сеанс Общего экрана/удалённого управления (ты, возможно, смотришь через него). Соединение НЕ рву: службы уже выключены насовсем и полностью отключатся при перезагрузке в конце.' 'A Screen Sharing / remote control session is ACTIVE (you may be watching through it). NOT dropping it: the services are disabled for good and fully turn off at the final reboot.')"
+else
+    as_root /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -deactivate -stop 2>/dev/null
+    as_root pkill -x screensharingd 2>/dev/null
+    sleep 1
+    if pgrep -x screensharingd >/dev/null 2>&1; then
+        warn "$(L 'Общий экран не выключился из терминала — открою Общий доступ, сними галки сам.' 'Screen Sharing did not go off from the terminal — opening Sharing, uncheck it yourself.')"
+        open "x-apple.systempreferences:com.apple.Sharing-Settings.extension" 2>/dev/null
+        SS_MANUAL=1
+    else
+        ok "$(L 'Общий экран, удалённое управление (ARD) и удалённый вход (SSH) выключены (насовсем).' 'Screen Sharing, Remote Management (ARD) and Remote Login (SSH) are off (for good).')"
+    fi
+fi
+
 # AirDrop и Handoff выключить
 defaults write com.apple.NetworkBrowser DisableAirDrop -bool YES 2>/dev/null
 defaults -currentHost write com.apple.coreservices.useractivityd ActivityAdvertisingAllowed -bool no 2>/dev/null
@@ -447,10 +651,16 @@ ok "AirDrop и Handoff выключены."
 as_root defaults write /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled -bool false 2>/dev/null
 ok "Службы геолокации выключены."
 
-# Аналитика выключить
-defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null
+# Аналитика («Поделиться аналитикой с Apple») выключить. На свежих macOS
+# настройку читают из домена com.apple.SubmitDiagInfo (ключ AutoSubmit), а не из
+# старого DiagnosticMessagesHistory.plist — пишем оба, плюс запрет через
+# applicationaccess, чтобы галка была снята и не вернулась.
 as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null
-ok "Аналитика и отправка отчетов выключены."
+as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmitVersion -int 4 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SubmitDiagInfo AutoSubmit -bool false 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SubmitDiagInfo AutoSubmitVersion -int 4 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.applicationaccess allowDiagnosticSubmission -bool false 2>/dev/null
+ok "Аналитика Apple и отправка отчетов выключены (com.apple.SubmitDiagInfo)."
 
 # Siri выключить
 defaults write com.apple.assistant.support "Assistant Enabled" -bool false 2>/dev/null
@@ -459,9 +669,12 @@ ok "Siri выключена."
 # Gatekeeper: в новых macOS включен всегда и командой не управляется — ничего не делаем
 ok "Установка приложений: App Store + известные разработчики (стандарт macOS, менять не нужно)."
 
-# Wi-Fi: выключаем насовсем — работа ТОЛЬКО по кабелю (никаких утечек по воздуху)
+# Wi-Fi: что делать — выбрал человек в вопросе 9 (WIFI_MODE: 1 удалить службу,
+# 2 только выключить радио, 3 не трогать).
 WIFI_DEV=$(networksetup -listallhardwareports 2>/dev/null | awk '/Hardware Port: Wi-Fi/{getline; print $2}')
-if [ -n "$WIFI_DEV" ]; then
+if [ "$WIFI_MODE" = "3" ]; then
+    ok "Wi-Fi оставлен как есть (по твоему выбору)."
+elif [ -n "$WIFI_DEV" ]; then
     CUR_IF=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
     if [ "$CUR_IF" = "$WIFI_DEV" ]; then
         warn "Интернет сейчас идет через Wi-Fi! Воткни кабель (Ethernet или Raspberry Pi), иначе скачивание оборвется."
@@ -470,13 +683,17 @@ if [ -n "$WIFI_DEV" ]; then
     fi
     if [ "$CUR_IF" != "$WIFI_DEV" ]; then
         networksetup -setairportpower "$WIFI_DEV" off &>/dev/null
-        WIFI_SVC=$(networksetup -listnetworkserviceorder 2>/dev/null | grep -B1 "Device: $WIFI_DEV)" | head -1 | sed 's/^([^)]*) //')
-        [ -z "$WIFI_SVC" ] && WIFI_SVC="Wi-Fi"
-        as_root networksetup -removenetworkservice "$WIFI_SVC" &>/dev/null
-        if networksetup -listallnetworkservices 2>/dev/null | grep -qx "\*\{0,1\}$WIFI_SVC"; then
-            warn "Wi-Fi выключен, но удалить службу «$WIFI_SVC» не вышло — удали руками: Настройки -> Сеть -> Wi-Fi -> ... -> Удалить службу."
+        if [ "$WIFI_MODE" = "2" ]; then
+            ok "Wi-Fi: радиомодуль выключен, служба оставлена. Вернуть: Настройки -> Сеть -> Wi-Fi -> Включить."
         else
-            ok "Wi-Fi выключен и удален из сетевых служб — только кабель. Обратно: Настройки -> Сеть -> ... -> Добавить службу."
+            WIFI_SVC=$(networksetup -listnetworkserviceorder 2>/dev/null | grep -B1 "Device: $WIFI_DEV)" | head -1 | sed 's/^([^)]*) //')
+            [ -z "$WIFI_SVC" ] && WIFI_SVC="Wi-Fi"
+            as_root networksetup -removenetworkservice "$WIFI_SVC" &>/dev/null
+            if networksetup -listallnetworkservices 2>/dev/null | grep -qx "\*\{0,1\}$WIFI_SVC"; then
+                warn "Wi-Fi выключен, но удалить службу «$WIFI_SVC» не вышло — удали руками: Настройки -> Сеть -> Wi-Fi -> ... -> Удалить службу."
+            else
+                ok "Wi-Fi выключен и удален из сетевых служб НАВСЕГДА — только кабель. Обратно: Настройки -> Сеть -> ... -> Добавить службу."
+            fi
         fi
     else
         err "Кабель так и не появился — Wi-Fi НЕ трогаю (иначе упадут скачивания). Воткни кабель и перезапусти скрипт."
@@ -504,13 +721,29 @@ bt_is_on() {
     return 0
 }
 
+# ПОЧЕМУ Bluetooth «сам включился», хотя мы его выключали:
+# если к Mac подключены беспроводные устройства (Magic Keyboard/Mouse/Trackpad),
+# macOS НЕ даёт держать Bluetooth выключенным — иначе ты останешься без клавиатуры
+# и мыши — и включает его обратно при перезагрузке. Плюс есть автопоиск клавы/мыши
+# (BluetoothAutoSeek*), который тоже поднимает радио. Поэтому глушим автопоиск и,
+# если это только Bluetooth-устройства ввода, предупреждаем — их надо заменить на
+# проводные, иначе выключить BT насовсем нельзя.
 bt_off() {
     as_root defaults write /Library/Preferences/com.apple.Bluetooth ControllerPowerState -int 0 2>/dev/null
     as_root defaults write /Library/Preferences/com.apple.Bluetooth.plist ControllerPowerState -int 0 2>/dev/null
+    # Автопоиск беспроводных клавы/мыши — из-за него радио включается само
+    as_root defaults write /Library/Preferences/com.apple.Bluetooth BluetoothAutoSeekKeyboard -int 0 2>/dev/null
+    as_root defaults write /Library/Preferences/com.apple.Bluetooth BluetoothAutoSeekPointingDevice -int 0 2>/dev/null
     as_root launchctl kickstart -k system/com.apple.bluetoothd 2>/dev/null \
         || as_root killall -9 bluetoothd 2>/dev/null
     sleep 3
 }
+
+# Есть ли подключённые Bluetooth-устройства (из-за них система не отпускает радио)
+BT_CONNECTED=$(system_profiler SPBluetoothDataType 2>/dev/null | grep -c -i "Connected: Yes")
+if [ "${BT_CONNECTED:-0}" -gt 0 ] 2>/dev/null; then
+    warn "$(L 'К Mac подключены Bluetooth-устройства (клавиатура/мышь/наушники). Пока они подключены, macOS будет сам включать Bluetooth обратно. Для полной изоляции используй ПРОВОДНЫЕ клавиатуру и мышь.' 'Bluetooth devices are connected (keyboard/mouse/headphones). While they are connected macOS will keep turning Bluetooth back on. For full isolation use a WIRED keyboard and mouse.')"
+fi
 
 info "$(L 'Выключаю Bluetooth...' 'Turning Bluetooth off...')"
 bt_off
@@ -522,11 +755,13 @@ if bt_is_on; then
     info "$(L 'Открываю настройки Bluetooth — переключи тумблер в ВЫКЛ, я подожду и проверю сам.' 'Opening Bluetooth settings — flip the switch OFF, I will wait and verify.')"
     open "x-apple.systempreferences:com.apple.BluetoothSettings" 2>/dev/null || open -b com.apple.systempreferences 2>/dev/null
     BT_TRY=0
+    SPIN_N=0
     while bt_is_on && [ $BT_TRY -lt 60 ]; do
         sleep 3
         BT_TRY=$((BT_TRY + 1))
-        [ $((BT_TRY % 10)) -eq 0 ] && dim "$(L 'жду, Bluetooth все еще включен...' 'waiting, Bluetooth is still on...')"
+        spin "$(L 'жду, Bluetooth все еще включен' 'waiting, Bluetooth is still on') — $((BT_TRY * 3)) сек"
     done
+    spin_end
     if bt_is_on; then
         err "$(L 'Bluetooth так и остался ВКЛЮЧЕН — выключи его вручную (добавил в список доделок).' 'Bluetooth is still ON — turn it off manually (added to the manual list).')"
         BT_MANUAL=1
@@ -571,14 +806,16 @@ net_ok() {
 
 wait_for_internet() {
     if net_ok; then return 0; fi
-    warn "Интернета НЕТ. Подключи кабель (Wi-Fi отключен) — жду и проверяю каждые 5 секунд..."
+    warn "$(L 'Интернета НЕТ. Подключи кабель (Wi-Fi отключен) — жду...' 'No internet. Plug in the cable (Wi-Fi is off) — waiting...')"
     local n=0
+    SPIN_N=0
     while ! net_ok; do
-        sleep 5
+        sleep 1
         n=$((n + 1))
-        [ $((n % 6)) -eq 0 ] && echo "   ...все еще нет интернета ($((n * 5)) сек), жду."
+        spin "$(L 'жду интернет' 'waiting for internet') — ${n} сек"
     done
-    ok "Интернет появился — продолжаю."
+    spin_end
+    ok "$(L 'Интернет появился — продолжаю.' 'Internet is up — continuing.')"
 }
 
 app_installed() {
@@ -591,6 +828,7 @@ app_installed() {
         "Tukan")        [ -n "$(find /Applications -maxdepth 1 -iname '*tukan*' 2>/dev/null | head -1)" ] ;;
         "MailMate")     [ -d "/Applications/MailMate.app" ] ;;
         "qTox")         [ -d "/Applications/qTox.app" ] ;;
+        "Excel")        [ -d "/Applications/Microsoft Excel.app" ] ;;
         *) return 1 ;;
     esac
 }
@@ -604,13 +842,13 @@ install_dmg() {
     [ -z "$fname" ] && fname=$(basename "$url")
     local dmg="$DL/$fname"
     wait_for_internet
-    echo "Скачиваю $appname..."
-    run curl -L -s -o "$dmg" "$url"
+    info "$(L 'Скачиваю' 'Downloading') $appname..."
+    curl -L --fail --progress-bar --retry 2 --retry-delay 2 -o "$dmg" "$url"
     if [ ! -f "$dmg" ] || [ ! -s "$dmg" ]; then
-        err "$appname не скачался. Поставь вручную позже."
+        err "$appname $(L 'не скачался. Поставь вручную позже.' 'did not download. Install manually later.')"
         return 1
     fi
-    echo "Устанавливаю $appname..."
+    info "$(L 'Устанавливаю' 'Installing') $appname..."
     if [[ "$fname" == *.pkg ]]; then
         as_root installer -pkg "$dmg" -target / >/dev/null
         if [ $? -eq 0 ]; then
@@ -751,20 +989,43 @@ if [ "$INSTALL_QTOX" = "да" ]; then
     fi
 fi
 
-# Дубли в /Applications («MailMate 2.app», «Telegram копия.app» и т.п.) — убираем,
-# иначе человек открывает не ту копию и не понимает, почему данные пустые.
+# Microsoft Excel (по желанию). Официальный прямой .pkg с CDN Microsoft
+# (go.microsoft.com/fwlink/?linkid=525135) — подписан и нотаризован, Gatekeeper
+# его пускает. Ставится «пробным»: активируется при входе в аккаунт Microsoft 365.
+if [ "$INSTALL_EXCEL" = "да" ]; then
+    install_dmg "https://go.microsoft.com/fwlink/?linkid=525135" "Excel" "MicrosoftExcel.pkg"
+fi
+
+# Дубли в /Applications («MailMate 2.app», «Telegram копия.app» и т.п.) — удаляем САМИ.
+# ОТКУДА они берутся: когда в /Applications уже лежит копия программы (её кто-то
+# перетащил вручную или прошлый запуск скрипта её поставил) и она в этот момент
+# ЗАПУЩЕНА/занята, Finder и cp не могут перезаписать существующий .app и создают
+# рядом «Имя 2.app». Поэтому: сначала гасим запущенную копию, потом сносим лишние,
+# оставляя ровно один «Имя.app».
 dedupe_app() {
     local base="$1" keep="/Applications/$1.app" d
-    [ -d "$keep" ] || return 0
     while IFS= read -r d; do
         [ "$d" = "$keep" ] && continue
-        echo ""
-        warn "$(L 'Нашел лишнюю копию программы:' 'Found a duplicate copy of the app:') $d"
-        read -r -p "   $(L 'Удалить ее (оставлю' 'Delete it (keeping') $keep)? (да/нет) [да]: " DUPOK < /dev/tty
-        [ "$(yn "${DUPOK:-да}")" = "да" ] && { as_root rm -rf "$d" && ok "$(L 'Удалено:' 'Deleted:') $d"; }
-    done < <(find /Applications -maxdepth 1 -iname "$base*.app" 2>/dev/null)
+        # Если «чистого» keep нет, а есть дубль — первый дубль делаем основным.
+        if [ ! -d "$keep" ]; then
+            as_root mv "$d" "$keep" 2>/dev/null && { ok "$(L 'Переименовал дубль в основной:' 'Renamed duplicate to primary:') $keep"; continue; }
+        fi
+        pkill -f "$d" 2>/dev/null
+        as_root rm -rf "$d" 2>/dev/null && ok "$(L 'Удалён дубль:' 'Removed duplicate:') $d"
+    done < <(find /Applications -maxdepth 1 \( -iname "$base*.app" \) 2>/dev/null | sort)
 }
-for A in "MailMate" "Telegram" "VeraCrypt" "qTox" "Sublime Text"; do dedupe_app "$A"; done
+for A in "MailMate" "Telegram" "VeraCrypt" "qTox" "Sublime Text" "Microsoft Excel"; do dedupe_app "$A"; done
+# Общий добор: «* 2.app / *копия*.app» — но ТОЛЬКО если рядом есть базовая копия без
+# номера. Иначе снесём легальные приложения, которые сами так называются (например
+# «Linken Sphere 2.app» — это НЕ дубль, а название версии 2).
+while IFS= read -r d; do
+    [ -z "$d" ] && continue
+    base=$(echo "$d" | sed -E 's/ [0-9]+\.app$/.app/; s/ ?(копия|copy)[^/]*\.app$/.app/I')
+    [ "$base" = "$d" ] && continue
+    [ -d "$base" ] || continue   # базовой копии нет — значит это не дубль, не трогаем
+    pkill -f "$d" 2>/dev/null
+    as_root rm -rf "$d" 2>/dev/null && ok "$(L 'Удалён дубль:' 'Removed duplicate:') $d"
+done < <(find /Applications -maxdepth 1 \( -iname "* [0-9].app" -o -iname "*копия*.app" -o -iname "*copy*.app" \) 2>/dev/null)
 
 # ------------------------------------------------------------
 # ФАЗА 4: FILEVAULT
@@ -1076,18 +1337,31 @@ else
         [ -d "$found" ] || return 1
         echo ""
         echo "$(L 'Нашел данные на диске:' 'Found data on the disk:') $found"
-        read -r -p "   $(L 'Подключить симлинком (ничего не переношу)? (да/нет) [да]' 'Link it with a symlink (nothing is moved)? (yes/no) [yes]'): " LK
-        LK=$(yn "${LK:-да}")
-        [ "$LK" != "да" ] && return 1
+        if [ "$AUTO_LINK" = "да" ]; then
+            dim "$(L 'Подключаю симлинком автоматически (выбрано в начале).' 'Linking automatically (chosen at the start).')"
+        else
+            read -r -p "   $(L 'Подключить символьной ссылкой (ничего не переношу)? (да/нет) [да]' 'Link it with a symlink (nothing is moved)? (yes/no) [yes]'): " LK
+            LK=$(yn "${LK:-да}")
+            [ "$LK" != "да" ] && return 1
+        fi
         link_to "$src" "$found"
         LINKED_SRC="$LINKED_SRC|$src"
         return 0
     }
     LINKED_SRC=""
 
+    # СНАЧАЛА проверяем симлинки: то, что уже подключено, НЕ ищем по диску заново
+    # и НЕ спрашиваем про него — сразу отчитываемся и пропускаем.
+    already_linked() {
+        [ -L "$1" ] || return 1
+        ok "$2 — $(L 'уже подключен симлинком, пропускаю.' 'already linked with a symlink, skipping.')"
+        return 0
+    }
     echo "$(L 'Ищу данные приложений по ВСЕМУ диску (включая подпапки) — переносить никуда не буду.' 'Scanning the whole disk (all subfolders) — nothing will be moved.')"
     TG_SRC="$(tg_local_dir)/stable"
-    if [ ! -d "$DATA/Telegram/stable" ]; then
+    if already_linked "$TG_SRC" "Telegram"; then
+        :
+    elif [ ! -d "$DATA/Telegram/stable" ]; then
         TG_FOUND=$(deep_find "$TG_GLOB")
         if [ -n "$TG_FOUND" ] && [ -d "$TG_FOUND/stable" ]; then
             link_in_place "$TG_FOUND/stable" "$TG_SRC"
@@ -1098,11 +1372,15 @@ else
             fi
         fi
     fi
-    [ ! -d "$DATA/Sublime Text" ] && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }
-    [ ! -d "$DATA/app.ls" ] && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }
-    [ ! -d "$DATA/MailMate" ] && { MM_FOUND=$(deep_find "MailMate"); [ -n "$MM_FOUND" ] && link_in_place "$MM_FOUND" "$HOME/Library/Application Support/MailMate"; }
-    [ ! -d "$DATA/Tox" ] && { TOX_FOUND=$(deep_find "Tox"); [ -n "$TOX_FOUND" ] && link_in_place "$TOX_FOUND" "$HOME/Library/Application Support/Tox"; }
-    if ! find "$DATA" -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
+    already_linked "$HOME/Library/Application Support/Sublime Text" "Sublime Text" || { [ ! -d "$DATA/Sublime Text" ] && { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }; }
+    already_linked "$HOME/Library/Safari" "Safari" || { [ ! -d "$DATA/Safari" ] && { SF_FOUND=$(deep_find "Safari"); [ -n "$SF_FOUND" ] && { osascript -e 'quit app "Safari"' 2>/dev/null; sleep 1; link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }; }; }
+    already_linked "$HOME/Library/Application Support/app.ls" "Linken Sphere" || { [ ! -d "$DATA/app.ls" ] && { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }; }
+    already_linked "$HOME/Library/Application Support/MailMate" "MailMate" || { [ ! -d "$DATA/MailMate" ] && { MM_FOUND=$(deep_find "MailMate"); [ -n "$MM_FOUND" ] && link_in_place "$MM_FOUND" "$HOME/Library/Application Support/MailMate"; }; }
+    already_linked "$HOME/Library/Application Support/Tox" "Tox (qTox)" || { [ ! -d "$DATA/Tox" ] && { TOX_FOUND=$(deep_find "Tox"); [ -n "$TOX_FOUND" ] && link_in_place "$TOX_FOUND" "$HOME/Library/Application Support/Tox"; }; }
+    TK_LINKED=$(find "$HOME/Library/Application Support" -maxdepth 1 -type l -iname "*tukan*" 2>/dev/null | head -1)
+    if [ -n "$TK_LINKED" ]; then
+        ok "Tukan — $(L 'уже подключен симлинком, пропускаю.' 'already linked with a symlink, skipping.')"
+    elif ! find "$DATA" -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
         TK_FOUND=$(deep_find "*tukan*")
         [ -n "$TK_FOUND" ] && link_in_place "$TK_FOUND" "$HOME/Library/Application Support/$(basename "$TK_FOUND")"
     fi
@@ -1161,18 +1439,49 @@ else
                 src="$HOME/Library/Application Support/$name"
                 sub="$item" ;;
         esac
+        if [ -L "$src" ]; then
+            ok "«$name» — уже подключен симлинком, пропускаю."
+            FOUND=1
+            continue
+        fi
         echo "Нашел на диске: «$name»"
-        read -r -p "   Подключить к системе? (да/нет) [да]: " L
-        L=$(yn "${L:-да}")
-        [ "$L" != "да" ] && continue
+        if [ "$AUTO_LINK" = "да" ]; then
+            dim "$(L 'Подключаю автоматически (выбрано в начале).' 'Linking automatically (chosen at the start).')"
+        else
+            read -r -p "   Подключить к системе? (да/нет) [да]: " L
+            L=$(yn "${L:-да}")
+            [ "$L" != "да" ] && continue
+        fi
         FOUND=1
         link_to "$src" "$sub"
     done
     [ $FOUND -eq 0 ] && echo "На диске пока нет данных — настроим с нуля."
 
+    # Если данных нет НИГДЕ (ни в системе, ни на диске) — предлагаем запустить
+    # приложение один раз, чтобы оно само создало папку с реальными данными,
+    # а не подключать пустую (иначе проверка справедливо ругается «папка пустая»).
+    offer_launch() {
+        local launchname="$1" src="$2" appmatch
+        [ -z "$launchname" ] && return 1
+        appmatch=$(find /Applications -maxdepth 1 -iname "$launchname*.app" 2>/dev/null | head -1)
+        [ -z "$appmatch" ] && return 1
+        echo ""
+        warn "$(L "Данных «$launchname» нет ни в системе, ни на диске — папку создавать нечем." "No data for \"$launchname\" anywhere — nothing to create the folder from.")"
+        read -r -p "   $(L 'Запустить приложение сейчас, чтобы оно создало папку? (да/нет) [да]' 'Launch the app now so it creates its folder? (yes/no) [yes]'): " OL
+        OL=$(yn "${OL:-да}")
+        [ "$OL" != "да" ] && return 1
+        open "$appmatch" 2>/dev/null
+        echo "$(L 'Войди/настрой, потом ЗАКРОЙ приложение и нажми Enter.' 'Sign in / set up, then QUIT the app and press Enter.')"
+        pause
+        osascript -e "quit app \"$(basename "$appmatch" .app)\"" 2>/dev/null
+        sleep 2
+        [ -d "$src" ]
+    }
+
     # --- 2) ОБЯЗАТЕЛЬНЫЕ ПРИЛОЖЕНИЯ: если не подключены — переносим с системы или создаем ---
+    # 3-й аргумент (необязательный) — имя приложения в /Applications для offer_launch.
     ensure_app() {
-        local src="$1" dstname="$2"
+        local src="$1" dstname="$2" launchname="$3"
         local dst="$DATA/$dstname"
         [ -L "$src" ] && return 0
         if [ -d "$dst" ]; then
@@ -1187,15 +1496,27 @@ else
             else
                 err "$dstname — копирование на диск не удалось, оригинал оставлен в системе!"
             fi
+        elif offer_launch "$launchname" "$src"; then
+            # Приложение создало папку в системе — переносим её на диск
+            mkdir -p "$(dirname "$dst")"
+            cp -R "$src" "$dst" && rm -rf "$src"
+            ok "$dstname — папка создана приложением и перенесена на диск."
+            link_to "$src" "$dst"
         else
             mkdir -p "$dst"
             link_to "$src" "$dst"
         fi
     }
 
-    ensure_app "$(tg_local_dir)/stable" "Telegram/stable"
-    ensure_app "$HOME/Library/Application Support/Sublime Text" "Sublime Text"
-    ensure_app "$HOME/Library/Application Support/app.ls" "app.ls"
+    ensure_app "$(tg_local_dir)/stable" "Telegram/stable" "Telegram"
+    ensure_app "$HOME/Library/Application Support/Sublime Text" "Sublime Text" "Sublime Text"
+    ensure_app "$HOME/Library/Application Support/app.ls" "app.ls" "Linken Sphere"
+
+    # Safari: закладки, история, настройки — тоже на секретный диск. Safari надо
+    # ЗАКРЫТЬ, иначе он держит файлы. Папка ~/Library/Safari защищена системой (TCC):
+    # если копирование не пройдёт — Терминалу нужен «Полный доступ к диску».
+    osascript -e 'quit app "Safari"' 2>/dev/null; sleep 2
+    ensure_app "$HOME/Library/Safari" "Safari" "Safari"
 
     # MailMate: почта (Messages) и настройки аккаунтов — только на диске
     if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ] || [ -e "$HOME/Library/Application Support/MailMate" ]; then
@@ -1209,7 +1530,10 @@ else
 
     TUKAN_DIR=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
     if [ -n "$TUKAN_DIR" ]; then
-        ensure_app "$TUKAN_DIR" "$(basename "$TUKAN_DIR")"
+        ensure_app "$TUKAN_DIR" "$(basename "$TUKAN_DIR")" "Tukan"
+    elif find /Applications -maxdepth 1 -iname "*tukan*" 2>/dev/null | grep -q .; then
+        # Tukan установлен, но данных нет — предложим запустить, чтобы создалась папка
+        ensure_app "$HOME/Library/Application Support/Tukan" "Tukan" "Tukan"
     else
         warn "Tukan: папка не найдена. Запусти Tukan один раз и перезапусти скрипт."
     fi
@@ -1220,19 +1544,76 @@ fi
 # ------------------------------------------------------------
 step "ОБНОВЛЕНИЯ macOS"
 
+# ПОЧЕМУ Mac УХОДИЛ В ПЕРЕЗАГРУЗКУ ПОСРЕДИ НАСТРОЙКИ:
+# ключ AutomaticallyInstallMacOSUpdates=true разрешает macOS САМОЙ поставить
+# скачанное обновление системы и САМОЙ перезагрузиться — она это делала прямо
+# во время работы скрипта. Поэтому:
+#   - автоПРОВЕРКУ и автоСКАЧИВАНИЕ включаем (перезагрузок не вызывают);
+#   - автоУСТАНОВКУ обновлений macOS ВЫКЛЮЧАЕМ — ставить будешь сам из
+#     Настройки -> Основные -> Обновление ПО, когда удобно;
+#   - команду softwareupdate вообще не запускаем — даже скачивание при включенной
+#     автоустановке провоцировало установку с перезагрузкой.
 as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true 2>/dev/null
 as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool true 2>/dev/null
-as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool true 2>/dev/null
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false 2>/dev/null
 as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true 2>/dev/null
 as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool true 2>/dev/null
 as_root defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool true 2>/dev/null
-ok "Автообновления включены (система и App Store)."
+ok "Обновления: автопроверка и автоскачивание ВКЛ, автоустановка системы ВЫКЛ."
+ok "Mac больше НЕ будет сам перезагружаться из-за обновлений — ставишь их сам, когда удобно."
 
-echo "Проверяю и ставлю обновления macOS — может занять ДОЛГО (не закрывай окно, Mac не трогай)..."
-if as_root softwareupdate --install --all --agree-to-license 2>&1 | grep -qi "restart"; then
-    warn "Обновления скачаны, но требуют перезагрузки — она и так будет в конце проверки."
+# ------------------------------------------------------------
+# ЧИСТКА ИСТОРИИ ТЕРМИНАЛА
+# ------------------------------------------------------------
+step "Чистка истории терминала"
+# Терминал сохраняет ВСЁ, что ты набирал (пути к секретному диску, имена, пароли,
+# если вводил их в командах), в файлы истории. Стираем их и историю текущей сессии.
+for HF in "$HOME/.zsh_history" "$HOME/.bash_history" "$HOME/.sh_history" \
+          "$HOME/.python_history" "$HOME/.lesshst" "$HOME/.local/share/fish/fish_history"; do
+    [ -e "$HF" ] && rm -f "$HF" 2>/dev/null
+done
+rm -rf "$HOME/.zsh_sessions" 2>/dev/null
+history -c 2>/dev/null
+ok "История терминала очищена."
+echo ""
+echo "$(L 'Если позже снова наберёшь что-то в Терминале — почисти этими командами:' 'If you type anything in Terminal again — clean it with these commands:')"
+echo '   history -c'
+echo '   rm -f ~/.zsh_history ~/.bash_history ~/.python_history'
+echo '   rm -rf ~/.zsh_sessions'
+echo "$(L '   потом ЗАКРОЙ окно Терминала (иначе история сессии запишется обратно при выходе).' '   then CLOSE the Terminal window (otherwise the session history is written back on exit).')"
+
+# ------------------------------------------------------------
+# ТАЙМЕРЫ ЭКРАНА, ЗАСТАВКИ И АВТОВЫХОДА (применяем в самом конце)
+# ------------------------------------------------------------
+# Всё долгое (скачивания, обновления, шифрование) уже позади — теперь можно
+# отпустить экран и применить твои выборы. На время работы они были отключены,
+# иначе гасили экран и разлогинивали посреди настройки.
+kill "$CAFFEINATE_PID" 2>/dev/null
+trap - EXIT
+DISPLAY_SLEEP=${DISPLAY_SLEEP:-5}
+as_root pmset -a displaysleep "$DISPLAY_SLEEP" &>/dev/null
+if [ "$DISPLAY_SLEEP" = "0" ]; then
+    ok "$(L 'Дисплей не гаснет по таймеру (выбрано «никогда»).' 'Display never sleeps (you chose never).')"
 else
-    ok "Обновления macOS установлены (или их не было)."
+    ok "$(L 'Дисплей выключается через' 'Display sleeps after') $DISPLAY_SLEEP $(L 'мин.' 'min.')"
+fi
+
+# Заставка: возвращаем таймер, который был до скрипта (или стандартные 20 мин)
+if [[ "$SAVED_SS_IDLE" =~ ^[0-9]+$ ]] && [ "$SAVED_SS_IDLE" != "0" ]; then
+    defaults -currentHost write com.apple.screensaver idleTime -int "$SAVED_SS_IDLE" 2>/dev/null
+else
+    defaults -currentHost write com.apple.screensaver idleTime -int 1200 2>/dev/null
+fi
+ok "$(L 'Заставка снова включена (на время настройки была отключена).' 'Screen saver re-enabled (it was off during setup).')"
+
+# Автовыход: применяем выбор из вопроса 6 только теперь
+AUTOLOGOUT_MIN=${AUTOLOGOUT_MIN:-30}
+if [ "$AUTOLOGOUT_MIN" = "0" ]; then
+    as_root defaults delete /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null
+    ok "$(L 'Автовыход из системы выключен.' 'Auto logout is off.')"
+else
+    as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int $((AUTOLOGOUT_MIN * 60))
+    ok "$(L 'Автовыход из системы через' 'Auto logout after') $AUTOLOGOUT_MIN $(L 'мин.' 'min.')"
 fi
 
 # ------------------------------------------------------------
@@ -1241,7 +1622,7 @@ fi
 step "ГОТОВО"
 
 MN=0
-mitem() { MN=$((MN + 1)); echo -e "  ${YELLOW}${BOLD}$MN.${NC} $1"; echo "     $2"; }
+mitem() { MN=$((MN + 1)); echo -e "  ${YELLOW}${BOLD}[$MN]${NC} ${BOLD}$1${NC}"; echo -e "       ${GREY}$2${NC}"; }
 
 echo -e "${BOLD}Что осталось сделать РУКАМИ (автоматом это сделать нельзя):${NC}"
 echo -e "${GREY}What is left to do MANUALLY (cannot be automated):${NC}"
@@ -1267,6 +1648,15 @@ if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ]; then
 fi
 [ "$INSTALL_QTOX" = "да" ] && mitem "qTox: запусти при ПОДКЛЮЧЕННОМ диске — профиль Tox создастся сразу на диске." \
       "qTox: launch it WITH the disk mounted — the Tox profile is created straight on the disk."
+[ "$SS_MANUAL" = "1" ] && mitem "Настройки -> Общий доступ -> выключи «Общий экран» и «Удалённое управление»." \
+      "Settings -> Sharing -> turn off «Screen Sharing» and «Remote Management»."
+if [ "$INSTALL_EXCEL" = "да" ] || [ -d "/Applications/Microsoft Excel.app" ]; then
+    mitem "Excel: открой один раз и войди в аккаунт Microsoft 365 — иначе работает как пробный." \
+          "Excel: open once and sign in to a Microsoft 365 account — otherwise it stays a trial."
+fi
+mitem "Safari: если увидел выше «копирование не удалось» — дай Терминалу Полный доступ к диску:" \
+      "Safari: if you saw «copy failed» above — grant Terminal Full Disk Access:"
+dim "Настройки -> Конфиденциальность -> Полный доступ к диску -> добавь Терминал, потом запусти скрипт снова."
 [ $MN -eq 0 ] && ok "Ручных пунктов нет — все сделано скриптом."
 echo ""
 echo -e "  ${BOLD}ГЛАВНОЕ ПРАВИЛО:${NC} ничего не храни в системе Mac и на Рабочем столе —"
@@ -1275,10 +1665,16 @@ echo "  можно восстановить даже после удаления
 echo -e "  ${BOLD}MAIN RULE:${NC} keep nothing inside macOS or on the Desktop — all files ONLY on the"
 echo "  mounted secret disk. Anything written to the system can be recovered even after deletion."
 echo ""
-echo "  ВАЖНО: Wi-Fi выключен насовсем (работа только по кабелю)."
-echo "  Вернуть, если вдруг надо: Настройки -> Сеть -> кнопка ... -> Добавить службу -> Wi-Fi."
-echo "  IMPORTANT: Wi-Fi is disabled for good (cable only). To bring it back:"
-echo "  Settings -> Network -> ... button -> Add Service -> Wi-Fi."
+case "$WIFI_MODE" in
+    1) echo "  ВАЖНО: служба Wi-Fi удалена насовсем (работа только по кабелю)."
+       echo "  Вернуть, если вдруг надо: Настройки -> Сеть -> кнопка ... -> Добавить службу -> Wi-Fi."
+       echo "  IMPORTANT: the Wi-Fi service was removed for good (cable only). To bring it back:"
+       echo "  Settings -> Network -> ... button -> Add Service -> Wi-Fi." ;;
+    2) echo "  ВАЖНО: радиомодуль Wi-Fi выключен, служба оставлена. Включить: Настройки -> Сеть -> Wi-Fi."
+       echo "  IMPORTANT: Wi-Fi radio is off, the service kept. Turn on: Settings -> Network -> Wi-Fi." ;;
+    *) echo "  ВАЖНО: Wi-Fi оставлен как есть (по твоему выбору)."
+       echo "  IMPORTANT: Wi-Fi left as is (your choice)." ;;
+esac
 if [ "$CREATE_USER" = "да" ]; then
     echo ""
     echo "  УЧЕТКИ: работай под «$NEW_USER» (её пароль). Основная (админ) — только для установки программ."
@@ -1305,7 +1701,7 @@ echo "  6. Настройки -> Сеть: Wi-Fi в списке быть не �
 echo "  7. Если бэкап Telegram был на обычной флешке — УДАЛИ его с неё (это полный доступ к телеге)."
 echo "     If the Telegram backup was on a normal flash drive — DELETE it there (it is full access)."
 echo ""
-echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
-echo -e "   ${GREEN}${BOLD}НАСТРОЙКА ЗАВЕРШЕНА. Можно закрыть окно.${NC}"
-echo -e "   ${GREY}SETUP COMPLETE. You can close this window.${NC}"
-echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
+echo -e "  ${GREEN}$(rep "━" "$(tw)")${NC}"
+echo -e "  ${GREEN}▎${NC}${BOLD}  НАСТРОЙКА ЗАВЕРШЕНА${NC}   ${GREY}— $(L 'общее время' 'total time') $(t2s $SECONDS)${NC}"
+echo -e "  ${GREEN}▎${NC}  ${GREY}$(L 'Можно закрыть окно.' 'You can close this window.')${NC}"
+echo -e "  ${GREEN}$(rep "━" "$(tw)")${NC}"

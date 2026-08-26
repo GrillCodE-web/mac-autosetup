@@ -6,6 +6,9 @@
 #  и показывает зеленый/красный список. Ничего не меняет.
 # ============================================================
 
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -19,10 +22,31 @@ PASS=0
 FAIL=0
 UNKNOWN=0
 
-good() { echo -e "  ${GREEN}${BOLD}✔${NC}  $1"; PASS=$((PASS+1)); }
-bad()  { echo -e "  ${RED}${BOLD}✖${NC}  $1"; FAIL=$((FAIL+1)); }
+# --- Визуальный каркас (как в ЗАПУСТИТЬ.command) ---------------------------
+tw() {
+    local w
+    w=$(tput cols 2>/dev/null) || w=${COLUMNS:-80}
+    case "$w" in ''|*[!0-9]*) w=80 ;; esac
+    [ "$w" -lt 60 ] && w=60
+    [ "$w" -gt 120 ] && w=120
+    echo "$w"
+}
+
+rep() { local s="$1" n="$2"; while [ "$n" -gt 0 ]; do printf '%s' "$s"; n=$((n - 1)); done; }
+
+t2s() {
+    local s="$1"
+    if [ "$s" -ge 3600 ]; then
+        printf '%d:%02d:%02d' $((s / 3600)) $(( (s % 3600) / 60 )) $((s % 60))
+    else
+        printf '%02d:%02d' $((s / 60)) $((s % 60))
+    fi
+}
+
+good() { echo -e "  ${GREEN}${BOLD}✓${NC}  $1"; PASS=$((PASS+1)); }
+bad()  { echo -e "  ${RED}${BOLD}✗${NC}  $1"; FAIL=$((FAIL+1)); }
 dunno(){ echo -e "  ${YELLOW}${BOLD}?${NC}  $1"; UNKNOWN=$((UNKNOWN+1)); }
-dim()  { echo -e "     ${GREY}$1${NC}"; }
+dim()  { echo -e "  ${GREY}· $1${NC}"; }
 
 # Папка Telegram: префикс команды (6N38VWS5BX. и др.) у разных сборок отличается
 TG_GLOB="*keepcoder.Telegram"
@@ -34,10 +58,12 @@ tg_local_dir() {
 }
 
 sect() {
+    local t="$1" w
+    w=$(tw)
     echo ""
-    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-    echo -e "  ${BOLD}${CYAN}▎${NC}${BOLD} $1${NC}"
-    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${GREY}─── $(t2s $SECONDS) $(rep "─" $((w - 10)))${NC}"
+    echo -e "  ${CYAN}${BOLD}▎${NC} ${BOLD}$t${NC}"
+    echo -e "  ${GREY}$(rep "─" $w)${NC}"
 }
 
 if [ "$(uname)" != "Darwin" ]; then
@@ -46,9 +72,13 @@ if [ "$(uname)" != "Darwin" ]; then
 fi
 
 clear
-echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-echo -e "   ${BOLD}ПРОВЕРКА НАСТРОЙКИ MAC  /  MAC SETUP CHECK${NC}"
-echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+TITLE_W=$(tw)
+echo ""
+echo -e "  ${CYAN}$(rep "━" "$TITLE_W")${NC}"
+echo -e "  ${CYAN}▎${NC}${BOLD}  ПРОВЕРКА НАСТРОЙКИ MAC${NC}"
+echo -e "  ${CYAN}▎${NC}  ${GREY}MAC SETUP CHECK${NC}"
+echo -e "  ${CYAN}$(rep "━" "$TITLE_W")${NC}"
+echo -e "  ${GREY}macOS $(sw_vers -productVersion 2>/dev/null) · $(sysctl -n hw.model 2>/dev/null) · $(date '+%d.%m.%Y %H:%M')${NC}"
 echo ""
 echo "Введи пароль от Mac (нужен только чтобы ПРОЧИТАТЬ настройки, ничего не меняется):"
 echo -e "${GREY}Enter your Mac password (read-only check, nothing is changed):${NC}"
@@ -124,7 +154,9 @@ if echo "$ADMIN_PASS" | sudo -S systemsetup -getremotelogin 2>/dev/null | grep -
 else
     bad "Удаленный вход (SSH) ВКЛЮЧЕН — выключи: Настройки -> Общий доступ -> Удаленный вход."
 fi
-if launchctl list 2>/dev/null | grep -qi "com.apple.screensharing"; then
+# Проверяем по процессу демона и по флагу launchctl (обе проверки через sudo —
+# system-домен из user-сессии не виден, прежний «launchctl list» врал «хорошо»).
+if pgrep -x screensharingd >/dev/null 2>&1; then
     bad "Общий экран / удаленное управление ВКЛЮЧЕНО — выключи в Настройки -> Общий доступ."
 else
     good "Общий экран и удаленное управление выключены."
@@ -147,6 +179,10 @@ if echo "$BT_LIVE" | grep -qi "off"; then
     good "Bluetooth выключен."
 elif echo "$BT_LIVE" | grep -qi "on"; then
     bad "Bluetooth ВКЛЮЧЕН! Выключи: Настройки -> Bluetooth."
+    if system_profiler SPBluetoothDataType 2>/dev/null | grep -qi "Connected: Yes"; then
+        dim "Причина авто-включения: к Mac подключены Bluetooth-устройства (клавиатура/мышь/наушники)."
+        dim "Пока они подключены, macOS сам включает Bluetooth. Замени клаву/мышь на ПРОВОДНЫЕ."
+    fi
 elif [ "$BT" = "0" ]; then
     good "Bluetooth выключен (по настройке)."
 else
@@ -227,6 +263,7 @@ check_link() {
 check_link "$(tg_local_dir)/stable" "Telegram"
 check_link "$HOME/Library/Application Support/Sublime Text" "Sublime Text"
 check_link "$HOME/Library/Application Support/app.ls" "Sphere"
+check_link "$HOME/Library/Safari" "Safari"
 [ -d "/Applications/MailMate.app" ] && check_link "$HOME/Library/Application Support/MailMate" "MailMate"
 [ -d "/Applications/qTox.app" ] && check_link "$HOME/Library/Application Support/Tox" "qTox"
 TUK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
@@ -252,7 +289,7 @@ for APP in "VeraCrypt" "Telegram" "Sublime Text"; do
         bad "Программа $APP НЕ установлена!"
     fi
 done
-for APP in "MailMate" "qTox"; do
+for APP in "MailMate" "qTox" "Microsoft Excel"; do
     [ -d "/Applications/$APP.app" ] && good "Программа $APP установлена (ставилась по желанию)."
 done
 if pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
@@ -260,10 +297,18 @@ if pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
 else
     bad "FUSE-T НЕ установлен — VeraCrypt не сможет подключить диск."
 fi
-# Дубли приложений: «MailMate 2.app» и т.п.
-DUPS=$(find /Applications -maxdepth 1 -iname "* 2.app" -o -maxdepth 1 -iname "*копия*.app" 2>/dev/null)
+# Дубли приложений: «MailMate 2.app», «... 3.app», «... копия.app» и т.п.
+# Считаем дублем ТОЛЬКО если рядом есть базовая копия без номера (иначе «Linken
+# Sphere 2.app» — это название версии, а не дубль).
+DUPS=""
+while IFS= read -r d; do
+    [ -z "$d" ] && continue
+    base=$(echo "$d" | sed -E 's/ [0-9]+\.app$/.app/; s/ ?(копия|copy)[^/]*\.app$/.app/I')
+    [ "$base" != "$d" ] && [ -d "$base" ] && DUPS="$DUPS$d"$'\n'
+done < <(find /Applications -maxdepth 1 \( -iname "* [0-9].app" -o -iname "*копия*.app" -o -iname "*copy*.app" \) 2>/dev/null)
+DUPS=$(echo "$DUPS" | grep -v '^$')
 if [ -n "$DUPS" ]; then
-    bad "В /Applications есть дубли программ — удали лишние:"
+    bad "В /Applications есть дубли программ — запусти ЗАПУСТИТЬ.command, он их удалит. Лишние:"
     echo "$DUPS" | while IFS= read -r d; do dim "$d"; done
 else
     good "Дублей приложений в /Applications нет."
@@ -271,12 +316,17 @@ fi
 
 sect "СИСТЕМНЫЕ НАСТРОЙКИ / SYSTEM SETTINGS"
 
-# --- 7. Аналитика ---
+# --- 7. Аналитика («Поделиться аналитикой с Apple») ---
+# Читаем оба домена: свежие macOS хранят в com.apple.SubmitDiagInfo, старые — в
+# DiagnosticMessagesHistory.plist. Достаточно, чтобы хоть один был выключен (=0).
 AS=$(defaults read "/Library/Application Support/CrashReporter/DiagnosticMessagesHistory.plist" AutoSubmit 2>/dev/null)
-if [ "$AS" = "0" ]; then
+AS2=$(defaults read /Library/Preferences/com.apple.SubmitDiagInfo AutoSubmit 2>/dev/null)
+if [ "$AS" = "0" ] || [ "$AS2" = "0" ]; then
     good "Отправка аналитики Apple выключена."
+elif [ -z "$AS" ] && [ -z "$AS2" ]; then
+    dunno "Аналитика: ключ ещё не записан — проверь глазами: Настройки -> Конфиденциальность -> Аналитика (галки сняты)."
 else
-    dunno "Аналитика: не смог подтвердить — проверь: Настройки -> Конфиденциальность -> Аналитика."
+    bad "Отправка аналитики Apple ВКЛЮЧЕНА — сними: Настройки -> Конфиденциальность -> Аналитика."
 fi
 
 # --- 8. Автовыход ---
@@ -330,7 +380,7 @@ fi
 # --- 12. Раскладки клавиатуры ---
 KBD=$(defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null)
 if echo "$KBD" | grep -qi "russian" && echo "$KBD" | grep -q "U.S."; then
-    good "Раскладки клавиатуры: английская (U.S.) + русская."
+    good "Раскладки записаны в настройках: английская (U.S.) + русская. ПРОВЕРЬ флажок в строке меню — если русской нет, добавь через Настройки -> Клавиатура -> Источники ввода -> +."
 elif echo "$KBD" | grep -qi "russian"; then
     dunno "Русская раскладка есть, а английской (U.S.) в списке не вижу."
 else
@@ -368,25 +418,43 @@ if [ "$TRASH" = "0" ]; then
 else
     dunno "В корзине $TRASH объектов — очисти, из нее данные восстанавливаются."
 fi
-if [ -s "$HOME/.bash_history" ] || [ -s "$HOME/.zsh_history" ]; then
-    dunno "История терминала не пуста — если вводил там что-то лишнее, почисти."
+if [ -s "$HOME/.bash_history" ] || [ -s "$HOME/.zsh_history" ] || [ -s "$HOME/.python_history" ]; then
+    dunno "История терминала не пуста — почисти. Введи в Терминале ЭТИ команды:"
+    dim "history -c"
+    dim "rm -f ~/.zsh_history ~/.bash_history ~/.python_history"
+    dim "rm -rf ~/.zsh_sessions"
+    dim "потом ЗАКРОЙ окно Терминала (иначе история запишется обратно при выходе)."
 else
     good "История терминала пуста."
 fi
 
 # --- ИТОГ ---
+TOTAL=$((PASS + FAIL + UNKNOWN))
+PCT=100
+[ "$TOTAL" -gt 0 ] && PCT=$((PASS * 100 / TOTAL))
+BAR_W=24
+FILLED=$((PCT * BAR_W / 100))
+[ "$FILLED" -gt "$BAR_W" ] && FILLED=$BAR_W
+EMPTY=$((BAR_W - FILLED))
+W=$(tw)
 echo ""
-echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-echo -e "   ${BOLD}ИТОГ / RESULT:${NC}   ${GREEN}${BOLD}✔ $PASS${NC}    ${RED}${BOLD}✖ $FAIL${NC}    ${YELLOW}${BOLD}? $UNKNOWN${NC}"
-echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-echo -e "  ${GREEN}✔${NC} в порядке / fine    ${RED}✖${NC} проблема / problem    ${YELLOW}?${NC} проверь глазами / check"
+echo -e "  ${CYAN}$(rep "━" "$W")${NC}"
+echo -e "  ${CYAN}▎${NC}${BOLD}  ИТОГ / RESULT${NC}"
+echo -e "  ${CYAN}$(rep "━" "$W")${NC}"
 echo ""
-if [ $FAIL -eq 0 ]; then
-    echo -e "${GREEN}${BOLD}  Красных пунктов нет — Mac настроен правильно.${NC}"
-    echo -e "${GREY}  No red items — the Mac is set up correctly.${NC}"
+echo -e "  ${GREEN}$(rep "▓" "$FILLED")${NC}${GREY}$(rep "░" "$EMPTY")${NC}  ${BOLD}${PCT}%${NC}"
+echo -e "   ${GREEN}${BOLD}✓ ${PASS}${NC}     ${RED}${BOLD}✗ ${FAIL}${NC}     ${YELLOW}${BOLD}? ${UNKNOWN}${NC}"
+echo -e "   ${GREY}в порядке      проблема      проверь глазами${NC}"
+echo ""
+if [ "$FAIL" -eq 0 ] && [ "$UNKNOWN" -eq 0 ]; then
+    echo -e "  ${GREEN}${BOLD}ИДЕАЛЬНО — все пункты зеленые, Mac настроен правильно.${NC}"
+    echo -e "  ${GREY}PERFECT — every item is green, the Mac is set up correctly.${NC}"
+elif [ "$FAIL" -eq 0 ]; then
+    echo -e "  ${GREEN}${BOLD}Красных пунктов нет — Mac настроен правильно. Желтые проверь глазами.${NC}"
+    echo -e "  ${GREY}No red items — the Mac is set up correctly. Check the yellow ones by eye.${NC}"
 else
-    echo -e "${RED}${BOLD}  Есть красные пункты — сделай то, что в них написано, и запусти проверку снова.${NC}"
-    echo -e "${GREY}  There are red items — fix them and run this check again.${NC}"
+    echo -e "  ${RED}${BOLD}Красных пунктов — ${FAIL}. Сделай, что в них написано, и запусти проверку снова.${NC}"
+    echo -e "  ${GREY}There are ${FAIL} red items — fix them and run this check again.${NC}"
 fi
 echo ""
-echo "Окно можно закрыть. / You can close this window."
+echo -e "  ${GREY}Окно можно закрыть. / You can close this window. · $(t2s $SECONDS)${NC}"
