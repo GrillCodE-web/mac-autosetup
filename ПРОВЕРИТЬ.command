@@ -312,12 +312,20 @@ SF_NO_DISK="Safari без диска лучше не открывать: он у
 check_link "$HOME/Library/Safari" "Safari" "$SF_NO_DISK"
 # v8 уводила контейнер Safari на диск симлинком — Safari из-за этого НЕ
 # ОТКРЫВАЛСЯ (его sandbox не пускает на /Volumes). Контейнер обязан быть
-# обычной папкой в системе; если это симлинк — ЗАПУСТИТЬ вернёт его на место.
+# обычной папкой в системе; чинит отдельный скрипт ПОЧИНИТЬ_САФАРИ.command.
 if [ -L "$HOME/Library/Containers/com.apple.Safari" ]; then
-    bad "Safari — контейнер подключен симлинком: Safari НЕ ОТКРОЕТСЯ! Запусти ЗАПУСТИТЬ.command, он вернёт контейнер в систему."
+    bad "Safari — контейнер подключен симлинком: Safari НЕ ОТКРОЕТСЯ! Запусти ПОЧИНИТЬ_САФАРИ.command, он вернёт контейнер в систему."
 elif [ -d "$HOME/Library/Containers/com.apple.Safari" ]; then
     dim "Safari — контейнер (cookies, настройки, кэш) лежит в системе: так и должно быть, macOS не даёт вынести его на внешний диск."
     dim "Сам профиль (закладки, история) — на секретном диске, выше. Cookies Safari остаются на Mac — не используй Safari для чувствительного."
+    # Остаток эпохи v8: копия контейнера на диске. Если локальный контейнер
+    # уже настоящий — это либо мусор после ремонта, либо залог сохранённых
+    # кукисов, если Safari стартовал «как новый».
+    if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR/Safari_Container" ]; then
+        dunno "На диске осталась копия контейнера Safari (эпоха v8): $DATA_DIR/Safari_Container."
+        dim "Логины и куки в Safari на месте — эту папку на диске можно стереть."
+        dim "Safari «как новый» (логинов нет) — запусти ПОЧИНИТЬ_САФАРИ.command: куки вернутся с диска."
+    fi
 fi
 [ -d "/Applications/MailMate.app" ] && check_link "$HOME/Library/Application Support/MailMate" "MailMate"
 [ -d "/Applications/qTox.app" ] && check_link "$HOME/Library/Application Support/Tox" "qTox"

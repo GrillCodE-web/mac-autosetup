@@ -24,7 +24,7 @@ NC='\033[0m'
 # Маркер версии: если при запуске НЕ напечаталась строка «ВЕРСИЯ СКРИПТА» ниже —
 # ты запускаешь УСТАРЕВШУЮ копию (в старых та самая гонка, что вешала меню).
 # Проверка без запуска: grep -c SCRIPT_VERSION ЗАПУСТИТЬ.command  (0 = старая)
-readonly SCRIPT_VERSION="v9-2026.08.27 — Safari: контейнер ~/Library/Containers/com.apple.Safari ВОЗВРАЩАЕТСЯ в систему: симлинк v8 ломал запуск Safari (sandbox не пускает системный браузер на /Volumes). Скрипт сам чинит: снимает симлинк, копирует контейнер обратно с диска. Профиль ~/Library/Safari как и раньше на диске"
+readonly SCRIPT_VERSION="v10-2026.08.27 — Safari: контейнер ~/Library/Containers/com.apple.Safari НЕ переносится на диск (симлинк v8 ломал запуск Safari: его sandbox не пускает системный браузер на /Volumes). Ремонт повреждённого v8 контейнера вынесен в отдельный скрипт ПОЧИНИТЬ_САФАРИ.command; ЗАПУСТИТЬ при обнаружении поломки только подсказывает. Профиль ~/Library/Safari как и раньше на диске"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -1938,31 +1938,11 @@ else
     # если копирование не пройдёт — Терминалу нужен «Полный доступ к диску».
     osascript -e 'quit app "Safari"' 2>/dev/null; sleep 2
     ensure_app "$HOME/Library/Safari" "Safari_Data" "Safari"
-    # РЕМОНТ v8 -> v9: v8 уводила контейнер Safari на диск симлинком — и Safari
-    # ПЕРЕСТАВАЛ ОТКРЫВАТЬСЯ: это системное sandbox-приложение, его песочница
-    # разрешает файлы только по родному пути ~/Library/Containers/..., а
-    # симлинк уводит операции на /Volumes (Tukan такое прощает, Safari — нет).
-    # Профиль (выше, ~/Library/Safari) на диске — работает. Контейнер
-    # возвращаем в систему: снимаем симлинк и копируем обратно с диска.
-    SFC="$HOME/Library/Containers/com.apple.Safari"
-    if [ -L "$SFC" ]; then
-        warn "$(L 'Нашел симлинк контейнера Safari (v8) — из-за него Safari не открывается. Возвращаю контейнер на место.' 'Found the Safari container symlink (v8) — it breaks Safari. Putting the container back in place.')"
-        SFC_DST="$DATA/Safari_Container/com.apple.Safari"
-        if [ -d "$SFC_DST" ] && [ -n "$(ls -A "$SFC_DST" 2>/dev/null)" ]; then
-            rm -f "$SFC"
-            if cp -R "$SFC_DST" "$SFC" 2>/dev/null && [ -n "$(ls -A "$SFC" 2>/dev/null)" ]; then
-                rm -rf "$DATA/Safari_Container"
-                ok "Safari — контейнер вернулся в систему (скопирован обратно с диска): Safari снова откроется."
-            else
-                rm -rf "$SFC"
-                err "Safari — контейнер не скопировался с диска; снял симлинк, Safari создаст контейнер заново (cookies и настройки Safari сбросятся)."
-            fi
-        else
-            rm -f "$SFC"
-            ok "Safari — симлинк контейнера снят (копии на диске не было): Safari создаст контейнер заново."
-        fi
-        dim "$(L 'cookies и настройки Safari остаются в системе — macOS не дает держать этот контейнер на внешнем диске.' 'Safari cookies and settings stay on the Mac — macOS does not allow this container on an external disk.')"
-        dim "$(L 'Если Safari все равно не откроется — сотри контейнер целиком, он родится заново: rm -rf ~/Library/Containers/com.apple.Safari' 'If Safari still will not open — wipe the container entirely, it will be recreated: rm -rf ~/Library/Containers/com.apple.Safari')"
+    # Контейнер ~/Library/Containers/com.apple.Safari никуда НЕ переносим и
+    # здесь НЕ чиним: симлинк туда (ошибка v8) ломал запуск Safari, ремонт
+    # вынесен в отдельный скрипт ПОЧИНИТЬ_САФАРИ.command.
+    if [ -L "$HOME/Library/Containers/com.apple.Safari" ]; then
+        err "$(L 'Safari: контейнер подключен симлинком (поломка v8) — Safari НЕ откроется. Запусти отдельный скрипт ПОЧИНИТЬ_САФАРИ.command, он вернёт контейнер и cookies с диска.' 'Safari: the container is a symlink (v8 breakage) — Safari will NOT open. Run the separate script ПОЧИНИТЬ_САФАРИ.command, it will restore the container and cookies from the disk.')"
     fi
 
     # MailMate: почта (Messages) и настройки аккаунтов — только на диске
