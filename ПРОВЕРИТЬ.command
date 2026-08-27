@@ -310,12 +310,14 @@ check_link "$HOME/Library/Application Support/app.ls" "Sphere"
 # без диска Safari лучше вообще не открывать.
 SF_NO_DISK="Safari без диска лучше не открывать: он увидит «пустые» закладки, и iCloud-синхронизация может затереть закладки в облаке."
 check_link "$HOME/Library/Safari" "Safari" "$SF_NO_DISK"
-# Safari хранит данные в ДВУХ местах: профиль (~/Library/Safari — выше) и
-# контейнер ~/Library/Containers/com.apple.Safari (cookies, настройки, кэш,
-# история профилей). Проверяем ОБА — половинчатый перенос оставляет в
-# системе cookies и логины.
-if [ -L "$HOME/Library/Containers/com.apple.Safari" ] || [ -e "$HOME/Library/Containers/com.apple.Safari" ]; then
-    check_link "$HOME/Library/Containers/com.apple.Safari" "Safari — контейнер (cookies)" "$SF_NO_DISK"
+# v8 уводила контейнер Safari на диск симлинком — Safari из-за этого НЕ
+# ОТКРЫВАЛСЯ (его sandbox не пускает на /Volumes). Контейнер обязан быть
+# обычной папкой в системе; если это симлинк — ЗАПУСТИТЬ вернёт его на место.
+if [ -L "$HOME/Library/Containers/com.apple.Safari" ]; then
+    bad "Safari — контейнер подключен симлинком: Safari НЕ ОТКРОЕТСЯ! Запусти ЗАПУСТИТЬ.command, он вернёт контейнер в систему."
+elif [ -d "$HOME/Library/Containers/com.apple.Safari" ]; then
+    dim "Safari — контейнер (cookies, настройки, кэш) лежит в системе: так и должно быть, macOS не даёт вынести его на внешний диск."
+    dim "Сам профиль (закладки, история) — на секретном диске, выше. Cookies Safari остаются на Mac — не используй Safari для чувствительного."
 fi
 [ -d "/Applications/MailMate.app" ] && check_link "$HOME/Library/Application Support/MailMate" "MailMate"
 [ -d "/Applications/qTox.app" ] && check_link "$HOME/Library/Application Support/Tox" "qTox"

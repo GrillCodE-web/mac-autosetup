@@ -24,7 +24,7 @@ NC='\033[0m'
 # Маркер версии: если при запуске НЕ напечаталась строка «ВЕРСИЯ СКРИПТА» ниже —
 # ты запускаешь УСТАРЕВШУЮ копию (в старых та самая гонка, что вешала меню).
 # Проверка без запуска: grep -c SCRIPT_VERSION ЗАПУСТИТЬ.command  (0 = старая)
-readonly SCRIPT_VERSION="v8-2026.08.27 — Safari: его данные живут в ДВУХ местах, второе — контейнер ~/Library/Containers/com.apple.Safari (cookies, настройки, кэш, история профилей) — тоже переносится на диск (раньше половина следов Safari всегда оставалась в системе); папка профиля на диске ищется по маркерам содержимого, а не по имени «Safari*»"
+readonly SCRIPT_VERSION="v9-2026.08.27 — Safari: контейнер ~/Library/Containers/com.apple.Safari ВОЗВРАЩАЕТСЯ в систему: симлинк v8 ломал запуск Safari (sandbox не пускает системный браузер на /Volumes). Скрипт сам чинит: снимает симлинк, копирует контейнер обратно с диска. Профиль ~/Library/Safari как и раньше на диске"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -198,7 +198,6 @@ precheck_link "Telegram"      "$(tg_local_dir)/stable"
 precheck_link "Sublime Text"  "$HOME/Library/Application Support/Sublime Text"
 precheck_link "Linken Sphere" "$HOME/Library/Application Support/app.ls"
 precheck_link "Safari"        "$HOME/Library/Safari"
-precheck_link "Safari (контейнер: cookies, настройки)" "$HOME/Library/Containers/com.apple.Safari"
 precheck_link "MailMate"      "$HOME/Library/Application Support/MailMate"
 precheck_link "Tox (qTox)"    "$HOME/Library/Application Support/Tox"
 TUKAN_PRECHECK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
@@ -1326,15 +1325,13 @@ resolve_data_dir() {
     # УМНЫЙ ПОИСК КОРНЯ ДАННЫХ: корень — это там, где РЕАЛЬНО лежат данные
     # приложений, а не «папка с именем DataAPP». Маркеры — известные папки
     # приложений, ЛЮБЫХ поколений схемы: app.ls, Tox, MailMate (в т.ч. старая
-    # схема *_Data: Safari_Data, MailMate_Data), контейнер Telegram, tukan,
-    # контейнер Safari (Safari_Container). ПУСТЫЕ папки маркерами не считаются
-    # (пустышки от старых прогонов голоса не дают). Побеждает корень, где
-    # живет БОЛЬШЕ РАЗНЫХ приложений.
+    # схема *_Data: Safari_Data, MailMate_Data), контейнер Telegram, tukan.
+    # ПУСТЫЕ папки маркерами не считаются (пустышки от старых прогонов
+    # голоса не дают). Побеждает корень, где живет БОЛЬШЕ РАЗНЫХ приложений.
     out=""
     for h in $(find "$vol" -maxdepth 6 -type d \
               \( -name "$TG_GLOB" -o -name "app.ls" -o -name "Tox" \
-                 -o -name "MailMate" -o -name "Safari_Data" -o -name "Safari_Container" \
-                 -o -iname "*tukan*" \) \
+                 -o -name "MailMate" -o -name "Safari_Data" -o -iname "*tukan*" \) \
               -not -path "*/.Trashes/*" -not -path "*/.Spotlight-V100/*" 2>/dev/null); do
         [ -n "$(ls -A "$h" 2>/dev/null)" ] || continue
         p=$(dirname "$h"); r="$p"
@@ -1767,11 +1764,6 @@ else
             if grep -qa "me.tukan.tukan" "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; then
                 echo "tukan"; return 0
             fi
-            # Контейнер САМОГО Safari: cookies, настройки, кэш, история профилей.
-            # Отдельный ключ, потому что линкуется он в другое место, чем профиль.
-            if grep -qa "com.apple.Safari" "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; then
-                echo "safari_container"; return 0
-            fi
             return 0
         fi
         # Joplin: база заметок + её служебные файлы
@@ -1788,7 +1780,6 @@ else
         case "$1" in
             telegram) echo "$(tg_local_dir)/stable" ;;
             safari)   echo "$HOME/Library/Safari" ;;
-            safari_container) echo "$HOME/Library/Containers/com.apple.Safari" ;;
             sublime)  echo "$HOME/Library/Application Support/Sublime Text" ;;
             tox)      echo "$HOME/Library/Application Support/Tox" ;;
             mailmate) echo "$HOME/Library/Application Support/MailMate" ;;
@@ -1947,13 +1938,32 @@ else
     # если копирование не пройдёт — Терминалу нужен «Полный доступ к диску».
     osascript -e 'quit app "Safari"' 2>/dev/null; sleep 2
     ensure_app "$HOME/Library/Safari" "Safari_Data" "Safari"
-    # Safari хранит данные в ДВУХ местах. Выше — профиль (~/Library/Safari:
-    # закладки, история). Но cookies, логины, настройки, кэш и история
-    # профилей лежат в контейнере ~/Library/Containers/com.apple.Safari —
-    # если его не перенести, на Mac остаются ПОЛОВИНА следов Safari
-    # (cookies выдают посещённые сайты даже при пустой истории). Переносим так же,
-    # как контейнер Tukan: контейнер целиком на диск + симлинк.
-    ensure_app "$HOME/Library/Containers/com.apple.Safari" "Safari_Container/com.apple.Safari" "Safari"
+    # РЕМОНТ v8 -> v9: v8 уводила контейнер Safari на диск симлинком — и Safari
+    # ПЕРЕСТАВАЛ ОТКРЫВАТЬСЯ: это системное sandbox-приложение, его песочница
+    # разрешает файлы только по родному пути ~/Library/Containers/..., а
+    # симлинк уводит операции на /Volumes (Tukan такое прощает, Safari — нет).
+    # Профиль (выше, ~/Library/Safari) на диске — работает. Контейнер
+    # возвращаем в систему: снимаем симлинк и копируем обратно с диска.
+    SFC="$HOME/Library/Containers/com.apple.Safari"
+    if [ -L "$SFC" ]; then
+        warn "$(L 'Нашел симлинк контейнера Safari (v8) — из-за него Safari не открывается. Возвращаю контейнер на место.' 'Found the Safari container symlink (v8) — it breaks Safari. Putting the container back in place.')"
+        SFC_DST="$DATA/Safari_Container/com.apple.Safari"
+        if [ -d "$SFC_DST" ] && [ -n "$(ls -A "$SFC_DST" 2>/dev/null)" ]; then
+            rm -f "$SFC"
+            if cp -R "$SFC_DST" "$SFC" 2>/dev/null && [ -n "$(ls -A "$SFC" 2>/dev/null)" ]; then
+                rm -rf "$DATA/Safari_Container"
+                ok "Safari — контейнер вернулся в систему (скопирован обратно с диска): Safari снова откроется."
+            else
+                rm -rf "$SFC"
+                err "Safari — контейнер не скопировался с диска; снял симлинк, Safari создаст контейнер заново (cookies и настройки Safari сбросятся)."
+            fi
+        else
+            rm -f "$SFC"
+            ok "Safari — симлинк контейнера снят (копии на диске не было): Safari создаст контейнер заново."
+        fi
+        dim "$(L 'cookies и настройки Safari остаются в системе — macOS не дает держать этот контейнер на внешнем диске.' 'Safari cookies and settings stay on the Mac — macOS does not allow this container on an external disk.')"
+        dim "$(L 'Если Safari все равно не откроется — сотри контейнер целиком, он родится заново: rm -rf ~/Library/Containers/com.apple.Safari' 'If Safari still will not open — wipe the container entirely, it will be recreated: rm -rf ~/Library/Containers/com.apple.Safari')"
+    fi
 
     # MailMate: почта (Messages) и настройки аккаунтов — только на диске
     if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ] || [ -e "$HOME/Library/Application Support/MailMate" ]; then
