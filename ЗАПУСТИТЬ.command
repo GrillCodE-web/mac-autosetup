@@ -24,7 +24,7 @@ NC='\033[0m'
 # Маркер версии: если при запуске НЕ напечаталась строка «ВЕРСИЯ СКРИПТА» ниже —
 # ты запускаешь УСТАРЕВШУЮ копию (в старых та самая гонка, что вешала меню).
 # Проверка без запуска: grep -c SCRIPT_VERSION ЗАПУСТИТЬ.command  (0 = старая)
-readonly SCRIPT_VERSION="v10-2026.08.27 — Safari: контейнер ~/Library/Containers/com.apple.Safari НЕ переносится на диск (симлинк v8 ломал запуск Safari: его sandbox не пускает системный браузер на /Volumes). Ремонт повреждённого v8 контейнера вынесен в отдельный скрипт ПОЧИНИТЬ_САФАРИ.command; ЗАПУСТИТЬ при обнаружении поломки только подсказывает. Профиль ~/Library/Safari как и раньше на диске"
+readonly SCRIPT_VERSION="v11-2026.08.27 — Safari ПОЛНОСТЬЮ убран из ЗАПУСТИТЬ: не переносится и не линкуется (профиль и контейнер остаются в системе; контейнер macOS на внешний диск не даёт вынести, а cookies и так пишутся в систему — выносить только профиль бессмысленно). Поломку v8 (симлинк контейнера) чинит отдельный ПОЧИНИТЬ_САФАРИ.command; FDA-проверка Терминала снята — она была нужна только для ~/Library/Safari"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -197,7 +197,6 @@ precheck_link() {
 precheck_link "Telegram"      "$(tg_local_dir)/stable"
 precheck_link "Sublime Text"  "$HOME/Library/Application Support/Sublime Text"
 precheck_link "Linken Sphere" "$HOME/Library/Application Support/app.ls"
-precheck_link "Safari"        "$HOME/Library/Safari"
 precheck_link "MailMate"      "$HOME/Library/Application Support/MailMate"
 precheck_link "Tox (qTox)"    "$HOME/Library/Application Support/Tox"
 TUKAN_PRECHECK=$(find "$HOME/Library/Application Support" -maxdepth 1 -iname "*tukan*" 2>/dev/null | head -1)
@@ -249,44 +248,6 @@ if [ $? -ne 0 ]; then
 fi
 ok "Пароль администратора верный."
 
-# --- ПОЛНЫЙ ДОСТУП К ДИСКУ (FDA) -------------------------------------------
-# В macOS НЕТ способа запросить его автоматически: ни промпта, ни API — только
-# руками в Настройках). Без него Терминалу запрещено трогать ~/Library/Safari и
-# другие TCC-защищённые папки: rm/ln/cp там падают с «Operation not permitted».
-# Поэтому скрипт проверяет доступ САМ, и если его нет — открывает нужную секцию
-# Настроек и ждёт, пока включишь тумблер. Больше скрипт ничего сделать не может.
-fda_granted() {
-    head -c 1 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" >/dev/null 2>&1 && return 0
-    [ -e "$HOME/Library/Safari/Bookmarks.plist" ] \
-        && head -c 1 "$HOME/Library/Safari/Bookmarks.plist" >/dev/null 2>&1 && return 0
-    [ -e "$HOME/Library/Application Support/Knowledge/knowledgeC.db" ] \
-        && head -c 1 "$HOME/Library/Application Support/Knowledge/knowledgeC.db" >/dev/null 2>&1 && return 0
-    return 1
-}
-if fda_granted; then
-    ok "$(L 'Полный доступ к диску у Терминала уже есть — защищённые папки (Safari и др.) доступны.' 'Terminal already has Full Disk Access — protected folders (Safari etc.) are reachable.')"
-else
-    warn "$(L 'У Терминала НЕТ «Полного доступа к диску» — без него macOS не даст перенести Safari и часть данных на диск.' 'Terminal lacks Full Disk Access — without it macOS will not let me move Safari and some data to the disk.')"
-    echo "   $(L 'Открываю Настройки — включи Терминалу тумблер и возвращайся сюда:' 'Opening Settings — enable the switch for Terminal and come back here:')"
-    echo "   Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску -> Терминал -> ВКЛ"
-    echo "   Settings -> Privacy & Security -> Full Disk Access -> Terminal -> ON"
-    open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null
-    echo "   $(L 'Жду, пока включишь (до 3 минут; я сам замечу и поеду дальше)...' 'Waiting for you to enable it (up to 3 minutes; I will notice and continue)...')"
-    FDA_WAIT=0
-    SPIN_N=0
-    while ! fda_granted && [ $FDA_WAIT -lt 90 ]; do
-        sleep 2
-        FDA_WAIT=$((FDA_WAIT + 1))
-        spin "$(L 'жду Полный доступ к диску' 'waiting for Full Disk Access') — $((FDA_WAIT * 2)) $(L 'сек' 'sec')"
-    done
-    spin_end
-    if fda_granted; then
-        ok "$(L 'Полный доступ к диску включен — продолжаю.' 'Full Disk Access is on — continuing.')"
-    else
-        warn "$(L 'Не дождался. Safari перенести НЕ СМОГУ, остальное продолжаю (в конце будет ручной пункт).' 'Did not get it. Safari CANNOT be moved; continuing with the rest (a manual item will be at the end).')"
-        FDA_MISSING=1
-    fi
-fi
 echo ""
 
 # ВОТ ЧТО ГАСИЛО ЭКРАН И «ПЕРЕЗАГРУЖАЛО» ПОСРЕДИ РАБОТЫ (пока ждёшь Enter
@@ -457,7 +418,7 @@ read -r -p "   $(L 'Выбор' 'Choice') [1]: " WIFI_MODE
 WIFI_MODE=${WIFI_MODE:-1}
 
 echo ""
-q 10 "$(L 'Данные приложений (Telegram, Sphere, Safari и т.д.) на зашифрованный диск.' 'App data (Telegram, Sphere, Safari, etc.) onto the encrypted disk.')"
+q 10 "$(L 'Данные приложений (Telegram, Sphere, MailMate и т.д.) на зашифрованный диск.' 'App data (Telegram, Sphere, MailMate, etc.) onto the encrypted disk.')"
 echo "    $(L 'ДА  — подключать всё найденное симлинками САМ, не спрашивая по каждому (рекомендуется).' 'YES — link everything found automatically, without asking about each one (recommended).')"
 echo "    $(L 'НЕТ — спрашивать по каждому приложению отдельно.' 'NO  — ask about each app separately.')"
 read -r -p "   $(L '(да/нет) [да]' '(yes/no) [yes]'): " AUTO_LINK
@@ -1625,12 +1586,6 @@ else
         return 1
     }
     echo "$(L 'Ищу данные приложений по ВСЕМУ диску (включая подпапки) — переносить никуда не буду.' 'Scanning the whole disk (all subfolders) — nothing will be moved.')"
-    # Чистка после старой версии скрипта: Safari по ошибке линковался в
-    # Application Support/Safari (лишний симлинк не туда) — убираю, если есть.
-    if [ -L "$HOME/Library/Application Support/Safari" ]; then
-        rm -f "$HOME/Library/Application Support/Safari" 2>/dev/null
-        dim "$(L 'Убрал лишний симлинк Safari из Application Support (баг старой версии).' 'Removed a stray Safari symlink from Application Support (old-version bug).')"
-    fi
     TG_SRC="$(tg_local_dir)/stable"
     if already_linked "$TG_SRC" "Telegram"; then
         :
@@ -1645,24 +1600,9 @@ else
     fi
     link_from "$HOME/Library/Application Support/Sublime Text" "Sublime Text" "$DATA/Sublime Text" \
         || { ST_FOUND=$(deep_find "Sublime Text"); [ -n "$ST_FOUND" ] && link_in_place "$ST_FOUND" "$HOME/Library/Application Support/Sublime Text"; }
-    osascript -e 'quit app "Safari"' 2>/dev/null; sleep 1
-    # Папку профиля на диске ищем НЕ по имени «Safari*»: под такой шаблон
-    # попадает и Safari_Container (родитель контейнера com.apple.Safari —
-    # профилем НЕ является), и родитель Safari_Data, когда настоящий профиль
-    # лежит вложенно (Safari_Data/Safari). Берём только папку, где реально
-    # есть файлы профиля Safari (те же маркеры, что и в fp_app ниже).
-    SF_FOUND=""
-    while IFS= read -r sfd; do
-        if [ -e "$sfd/Bookmarks.plist" ] || [ -e "$sfd/History.db" ] \
-           || [ -e "$sfd/TopSites.plist" ] || [ -d "$sfd/Template Icons" ]; then
-            SF_FOUND="$sfd"; break
-        fi
-    done < <(find "$DISK_ROOT" -type d -iname "Safari*" \
-             -not -path "*/.Trashes/*" -not -path "*/.Spotlight-V100/*" \
-             -not -path "*/.fseventsd/*" -not -path "*/.DocumentRevisions*" \
-             -not -path "*/.TemporaryItems/*" 2>/dev/null)
-    link_from "$HOME/Library/Safari" "Safari" "$DATA/Safari" \
-        || { [ -n "$SF_FOUND" ] && link_in_place "$SF_FOUND" "$HOME/Library/Safari"; }
+    # Safari скриптом НЕ переносится и НЕ линкуется (см. v11): профиль
+    # ~/Library/Safari и контейнер остаются в системе, папка Safari_Data
+    # на диске не трогается.
     link_from "$HOME/Library/Application Support/app.ls" "Linken Sphere" "$DATA/app.ls" \
         || { LS_FOUND=$(deep_find "app.ls"); [ -n "$LS_FOUND" ] && link_in_place "$LS_FOUND" "$HOME/Library/Application Support/app.ls"; }
     link_from "$HOME/Library/Application Support/MailMate" "MailMate" "$DATA/MailMate" \
@@ -1741,18 +1681,6 @@ else
         # Telegram: контейнер с accounts-metadata (или родитель «stable»)
         if [ -e "$d/accounts-metadata" ]; then echo "telegram"; return 0; fi
         if [ -d "$d/stable" ] && [ -e "$d/stable/accounts-metadata" ]; then echo "telegram"; return 0; fi
-        # Safari: фирменные файлы профиля. У свежего/почти пустого профиля многих
-        # из них НЕТ — поэтому маркеров широкий список + фирменные ПАПКИ Safari
-        # (у владельца Safari_Data ни одним старым маркером не опознавалась,
-        # хотя это была папка профиля Safari)
-        for f in "Bookmarks.plist" "History.db" "TopSites.plist" "PerSitePreferences.plist" \
-                 "TouchIcons.plist" "CloudTabs.db" "Tabs.db" "LastSession.plist" \
-                 "Recently Closed Tabs.plist" "Local Bookmarks.html"; do
-            if [ -e "$d/$f" ]; then echo "safari"; return 0; fi
-        done
-        if [ -d "$d/Template Icons" ] || [ -d "$d/Favicon Cache" ]; then
-            echo "safari"; return 0
-        fi
         # Sublime Text: обязательная пара папок
         if [ -d "$d/Local" ] && [ -d "$d/Packages" ]; then echo "sublime"; return 0; fi
         # qTox: профиль *.tox прямо в папке
@@ -1779,7 +1707,6 @@ else
     app_target() {
         case "$1" in
             telegram) echo "$(tg_local_dir)/stable" ;;
-            safari)   echo "$HOME/Library/Safari" ;;
             sublime)  echo "$HOME/Library/Application Support/Sublime Text" ;;
             tox)      echo "$HOME/Library/Application Support/Tox" ;;
             mailmate) echo "$HOME/Library/Application Support/MailMate" ;;
@@ -1933,18 +1860,6 @@ else
         LS_FAIL=1
     fi
 
-    # Safari: закладки, история, настройки — тоже на секретный диск. Safari надо
-    # ЗАКРЫТЬ, иначе он держит файлы. Папка ~/Library/Safari защищена системой (TCC):
-    # если копирование не пройдёт — Терминалу нужен «Полный доступ к диску».
-    osascript -e 'quit app "Safari"' 2>/dev/null; sleep 2
-    ensure_app "$HOME/Library/Safari" "Safari_Data" "Safari"
-    # Контейнер ~/Library/Containers/com.apple.Safari никуда НЕ переносим и
-    # здесь НЕ чиним: симлинк туда (ошибка v8) ломал запуск Safari, ремонт
-    # вынесен в отдельный скрипт ПОЧИНИТЬ_САФАРИ.command.
-    if [ -L "$HOME/Library/Containers/com.apple.Safari" ]; then
-        err "$(L 'Safari: контейнер подключен симлинком (поломка v8) — Safari НЕ откроется. Запусти отдельный скрипт ПОЧИНИТЬ_САФАРИ.command, он вернёт контейнер и cookies с диска.' 'Safari: the container is a symlink (v8 breakage) — Safari will NOT open. Run the separate script ПОЧИНИТЬ_САФАРИ.command, it will restore the container and cookies from the disk.')"
-    fi
-
     # MailMate: почта (Messages) и настройки аккаунтов — только на диске
     if [ "$INSTALL_MM" = "да" ] || [ -d "/Applications/MailMate.app" ] || [ -e "$HOME/Library/Application Support/MailMate" ]; then
         ensure_app "$HOME/Library/Application Support/MailMate" "MailMate"
@@ -1963,7 +1878,7 @@ else
     # --- 3) ПОЛЬЗОВАТЕЛЬСКИЕ ПАПКИ (Рабочий стол/Документы/Загрузки) ---
     # ФИЧА СНЯТА решением владельца: подмена этих папок симлинками на диск
     # ломала Finder. Папки остаются в системе как есть. Данные приложений
-    # (Telegram, Sphere, Safari и т.д.) подключаются как раньше — это не тронуто.
+    # (Telegram, Sphere и т.д.) подключаются как раньше — это не тронуто.
 
     echo ""
     dim "$(L 'Пользовательские папки (Рабочий стол, Документы, Загрузки) НЕ переношу — остаются в системе как есть.' 'User folders (Desktop, Documents, Downloads) are NOT moved — they stay in the system as is.')"
@@ -2115,9 +2030,9 @@ if [ "$INSTALL_EXCEL" = "да" ] || [ -d "/Applications/Microsoft Excel.app" ]; 
     mitem "Excel: открой один раз и войди в аккаунт Microsoft 365 — иначе работает как пробный." \
           "Excel: open once and sign in to a Microsoft 365 account — otherwise it stays a trial."
 fi
-if [ "$TCC_BLOCK" = "1" ] || [ "$FDA_MISSING" = "1" ]; then
-    mitem "Safari/данные: перенос уперся в «Полный доступ к диску» Терминала — дай его:" \
-          "Safari/data: the move hit Terminal Full Disk Access — grant it:"
+if [ "$TCC_BLOCK" = "1" ]; then
+    mitem "Данные одного из приложений не переехали — уперлось в права доступа Терминала, дай ему «Полный доступ к диску»:" \
+          "One of the apps' data could not be moved — Terminal hit an access limit, grant it Full Disk Access:"
     dim "Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску -> Терминал -> ВКЛ, перезапусти Терминал и запусти скрипт снова — он всё дотащит."
     dim "Settings -> Privacy & Security -> Full Disk Access -> Terminal -> ON, restart Terminal and re-run the script — it will finish the job."
 fi
