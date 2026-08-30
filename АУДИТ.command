@@ -144,7 +144,13 @@ fp() {
         echo "КОНТЕЙНЕР macOS (bundle: ${bid:-не прочитан})"; return 0
     fi
     if [ -e "$d/database.sqlite" ] && { [ -d "$d/profiles" ] || [ -e "$d/settings.json" ]; }; then echo "JOPLIN (database.sqlite)"; return 0; fi
-    if [ -e "$d/History" ] && [ -d "$d/Local Storage" ]; then echo "CHROMIUM-ПРОФИЛЬ (History + Local Storage)"; return 0; fi
+    # Linken Sphere: корень Chromium user-data — файл Local State + профили
+    # (Default или хеш-папки). Имя папки не важно: app.ls, App_LS2, Sphere...
+    if [ -e "$d/Local State" ]; then
+        if [ -d "$d/Default" ] || find "$d" -maxdepth 1 -type d -name "????????????????????????????????????????????????????????????????????????" 2>/dev/null | grep -q .; then
+            echo "LINKEN SPHERE (Local State + профили)"; return 0
+        fi
+    fi
     return 1
 }
 
