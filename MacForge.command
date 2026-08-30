@@ -1255,6 +1255,20 @@ disk_field() { # disk_field <устройство> <ключ_plist>
     /usr/libexec/PlistBuddy -c "Print :$2" "$p" 2>/dev/null
 }
 
+# UUID тома по пути монтирования. Для тома под FUSE-T (VeraCrypt) diskutil
+# часто ничего не отдает — тогда возвращаем пусто, и проверки ниже становятся
+# необязательными: лучше без сверки, чем ложный стоп на живом диске.
+vol_uuid_of() { # vol_uuid_of <путь тома>
+    local vdev
+    vdev=$(df "$1" 2>/dev/null | tail -1 | awk '{print $1}')
+    case "$vdev" in /dev/*) ;; *) return 1 ;; esac
+    disk_field "${vdev#/dev/}" VolumeUUID 2>/dev/null
+}
+# Значения, запомненные прошлым прогоном (строки вида ключ=значение в STAGE_FILE)
+stage_val() { # stage_val <ключ>
+    grep "^$1=" "$STAGE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-
+}
+
 list_external() {
     local p=/tmp/disks.plist i=0 n j wn
     diskutil list -plist external physical > "$p" 2>/dev/null || return 1
@@ -1410,10 +1424,13 @@ if ! stage_done disk; then
     else
         warn "VeraCrypt CLI том не подтвердил — беру найденный в /Volumes: $VOL_NAME (проверю по содержимому ниже)."
     fi
-    # UUID тома — в отметки, чтобы при возобновлении не спутать с другой флешкой
-    VDEV=$(df "$VOL_NAME" 2>/dev/null | tail -1 | awk '{print $1}')
-    VUUID=$(disk_field "${VDEV#/dev/}" VolumeUUID 2>/dev/null)
+    # UUID тома и физического диска — в отметки, чтобы при возобновлении
+    # не спутать секретный диск с другой флешкой (см. сверку ниже).
+    VUUID=$(vol_uuid_of "$VOL_NAME")
     [ -n "$VUUID" ] && echo "vol_uuid=$VUUID" >> "$STAGE_FILE"
+    [ -n "$DISK_UUID" ] && echo "disk_uuid=$DISK_UUID" >> "$STAGE_FILE"
+    [ -z "$VUUID" ] && [ -z "$DISK_UUID" ] && \
+        dim "UUID тома система не отдала — при перезапуске сверить диск не смогу."
 
     ok "Секретный диск подключен: $VOL_NAME"
     ding
@@ -1423,6 +1440,36 @@ fi
 
 VOL_NAME=$(vc_mounted_vol)
 [ -z "$VOL_NAME" ] && { err "Секретный том не смонтирован — без него фаза данных невозможна."; exit 1; }
+
+# Сверка тома с прошлым прогоном: ниже данные приложений уезжают на этот том и
+# заменяются симлинками, поэтому чужая флешка вместо секретного диска — это
+# потеря данных. Сверяем, только если UUID реально известны с обеих сторон.
+SAVED_VOL_UUID=$(stage_val vol_uuid)
+if [ -n "$SAVED_VOL_UUID" ]; then
+    NOW_VOL_UUID=$(vol_uuid_of "$VOL_NAME")
+    if [ -z "$NOW_VOL_UUID" ]; then
+        dim "UUID текущего тома система не отдала — сверку с прошлым прогоном пропускаю."
+    elif [ "$NOW_VOL_UUID" != "$SAVED_VOL_UUID" ]; then
+        err "Смонтирован ДРУГОЙ том, не тот, с которым начинался прогон."
+        err "Это не твой секретный диск — переносить на него данные не буду."
+        info "Отмонтируй лишние тома, смонтируй нужный в VeraCrypt и запусти скрипт заново."
+        info "Если диск правда сменился намеренно — удали $STAGE_FILE и начни с нуля."
+        exit 1
+    else
+        ok "Том тот же, что и в начале прогона (сверено по UUID)."
+    fi
+fi
+# Физический диск: если запомненный UUID есть, а диска среди внешних нет —
+# том смонтирован с чего-то другого. Предупреждаем, но не останавливаем:
+# у части USB-контейнеров diskutil не отдает DiskUUID вовсе.
+SAVED_DISK_UUID=$(stage_val disk_uuid)
+if [ -n "$SAVED_DISK_UUID" ]; then
+    DISK_SEEN=0
+    for dev in $(list_external); do
+        [ "$(disk_field "$dev" DiskUUID 2>/dev/null)" = "$SAVED_DISK_UUID" ] && { DISK_SEEN=1; break; }
+    done
+    [ "$DISK_SEEN" = "0" ] && warn "Физический диск из начала прогона среди подключенных не вижу — проверь, что том с него."
+fi
 
 # Гигиена секретного тома: не индексировать Spotlight (имена файлов не должны
 # попадать в системный индекс) и не бэкапить в Time Machine.
