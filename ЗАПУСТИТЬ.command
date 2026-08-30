@@ -557,6 +557,42 @@ if ! stage_done hardening; then
     # Время точное (раз геолокацию выключили — часы держим по сети)
     as_root sntp -sS time.apple.com 2>/dev/null && ok "Часы синхронизированы по сети (time.apple.com)."
 
+    # Удаленные Apple Events — выкл + проверка
+    as_root systemsetup -setremoteappleevents off 2>/dev/null
+    if as_root systemsetup -getremoteappleevents 2>/dev/null | grep -qi "Off"; then
+        ok "Удаленные Apple Events выключены (подтверждено)."
+    else
+        warn "Remote Apple Events — перечитать не смог. Проверь: Настройки -> Общие -> Общий доступ."
+    fi
+
+    # Общий доступ к принтерам — выкл + проверка
+    as_root cupsctl --no-share-printers 2>/dev/null
+    if cupsctl 2>/dev/null | grep -q "_share_printers=0"; then
+        ok "Общий доступ к принтерам выключен (подтверждено)."
+    else
+        warn "Принтеры: перечитать не смог — проверь Настройки -> Принтеры и сканеры."
+    fi
+
+    # Быстрое переключение пользователей — убрать из меню и запретить
+    as_root defaults write /Library/Preferences/.GlobalPreferences MultipleSessionEnabled -bool false 2>/dev/null
+    defaults -currentHost write com.apple.controlcenter FastUserSwitching -int 0 2>/dev/null
+    FUS=$(as_root defaults read /Library/Preferences/.GlobalPreferences MultipleSessionEnabled 2>/dev/null)
+    if [ "$FUS" = "0" ]; then ok "Быстрое переключение пользователей выключено (подтверждено)."
+    else warn "Переключение пользователей — перечитать не смог. Проверь Control Center в Настройках."; fi
+
+    # Подсказки Spotlight/Siri в поиске — выкл + проверка
+    defaults write com.apple.lookup.shared LookupSuggestionsDisabled -bool true 2>/dev/null
+    LSUG=$(defaults read com.apple.lookup.shared LookupSuggestionsDisabled 2>/dev/null)
+    if [ "$LSUG" = "1" ]; then ok "Подсказки Spotlight/Siri в поиске выключены (подтверждено)."
+    else warn "Подсказки поиска — перечитать не смог."; fi
+
+    # Внешние диски не светятся на Рабочем столе (и секретный том в том числе).
+    # Применится при перезапуске Finder в конце — отдельно Finder не дергаю.
+    defaults write com.apple.finder ShowExternalHardDrivesOnDesktop -bool false 2>/dev/null
+    HDD=$(defaults read com.apple.finder ShowExternalHardDrivesOnDesktop 2>/dev/null)
+    if [ "$HDD" = "0" ]; then ok "Иконки внешних дисков на Рабочем столе скрыты (применится после рестарта Finder)."
+    else warn "Рабочий стол: перечитать не смог."; fi
+
     stage_mark hardening
 fi
 
