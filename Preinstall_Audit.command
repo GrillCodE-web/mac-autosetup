@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  PREINSTALL AUDIT — АУДИТ ДИСКА И СИСТЕМЫ — v2
+#  PREINSTALL AUDIT — АУДИТ ДИСКА И СИСТЕМЫ — v3
+#  v3: чистый вывод — без простыней: app.ls показывается ОДИН раз,
+#  внутрь опознанных папок не лезем, Apple-контейнеры не светятся.
 #  ТОЛЬКО ЧИТАЕТ. Ничего не меняет, ничего не удаляет,
 #  ничего не устанавливает. Пароли не спрашивает.
 #  Запуск: двойной клик. Диск должен быть вставлен;
@@ -110,21 +112,27 @@ ok "Аудирую том: $VOL"
 VOL_NAME=$(basename "$VOL")
 
 # ------------------------------------------------------------
-hdr "2) КАРТА ДИСКА (папки до глубины 3, с количеством объектов)"
+hdr "2) КАРТА ДИСКА (верхний уровень: объекты + размер)"
 # ------------------------------------------------------------
-find "$VOL" -maxdepth 3 -type d \
-    -not -path "*/.Trashes*" -not -path "*/.Spotlight-V100*" \
-    -not -path "*/.fseventsd*" -not -path "*/.DocumentRevisions*" \
-    -not -path "*/.TemporaryItems*" 2>/dev/null | sort | while IFS= read -r d; do
-    [ "$d" = "$VOL" ] && continue
-    depth=$(printf '%s' "${d#$VOL/}" | tr -cd '/' | wc -c | tr -d ' ')
-    indent=$(printf '%*s' $((depth * 2)) '')
+for d in "$VOL"/*/; do
+    [ -d "$d" ] || continue
+    base=$(basename "$d")
+    case "$base" in .Trashes|.Spotlight-V100|.fseventsd|.DocumentRevisions-V100|.TemporaryItems) continue ;; esac
     cnt=$(ls -A "$d" 2>/dev/null | wc -l | tr -d ' ')
+    sz=$(du -sh "$d" 2>/dev/null | awk '{print $1}')
     if [ "$cnt" = "0" ]; then
-        echo -e "  ${indent}${GREY}$(basename "$d")/  (ПУСТАЯ)${NC}"
+        echo -e "  ${GREY}$base/  (ПУСТАЯ)${NC}"
     else
-        echo "  ${indent}$(basename "$d")/  ($cnt объектов)"
+        echo "  ${BOLD}$base/${NC}  ($cnt объектов, ${sz:-?})"
+        ls -A "$d" 2>/dev/null | head -8 | while IFS= read -r e; do
+            if [ -d "$d$e" ]; then echo "      $e/"; else echo "      $e"; fi
+        done
+        [ "$cnt" -gt 8 ] && echo -e "      ${GREY}... еще $((cnt - 8))${NC}"
     fi
+done
+# Файлы в корне тома (не папки) — тоже показываем
+find "$VOL" -maxdepth 1 -type f -not -name ".*" 2>/dev/null | while IFS= read -r f; do
+    echo -e "  ${GREY}$(basename "$f")  (файл в корне)${NC}"
 done
 
 # ------------------------------------------------------------
@@ -172,17 +180,30 @@ preview() {
     done
 }
 
-hdr "3) ОПОЗНАННЫЕ ДАННЫЕ НА ДИСКЕ (по содержимому, глубина до 6)"
+hdr "3) ОПОЗНАННЫЕ ДАННЫЕ НА ДИСКЕ (каждое приложение — один раз)"
 FOUND_ANY=0
+MATCHED=""
 while IFS= read -r d; do
+    # Внутрь уже опознанной папки НЕ лезем: app.ls — это ОДИН Sphere,
+    # а не 14 отдельных hex-профилей. Проверяем, что d не внутри опознанного.
+    skip=0
+    while IFS= read -r m; do
+        [ -n "$m" ] && case "$d/" in "$m/"*) skip=1; break ;; esac
+    done <<EOF
+$MATCHED
+EOF
+    [ $skip -eq 1 ] && continue
     key=$(fp "$d")
     [ -z "$key" ] && continue
     FOUND_ANY=1
+    MATCHED="$MATCHED$d
+"
+    sz=$(du -sh "$d" 2>/dev/null | awk '{print $1}')
     echo -e "  ${GREEN}${BOLD}$key${NC}"
     echo "    путь: $d"
-    echo "    объектов внутри: $(ls -A "$d" 2>/dev/null | wc -l | tr -d ' ')"
+    echo "    объектов внутри: $(ls -A "$d" 2>/dev/null | wc -l | tr -d ' '), размер: ${sz:-?}"
     preview "$d"
-done < <(find "$VOL" -maxdepth 6 -type d \
+done < <(find "$VOL" -maxdepth 4 -type d \
     -not -path "*/.Trashes*" -not -path "*/.Spotlight-V100*" \
     -not -path "*/.fseventsd*" -not -path "*/.DocumentRevisions*" \
     -not -path "*/.TemporaryItems*" 2>/dev/null | sort)
@@ -192,26 +213,36 @@ hdr "4) ПАПКИ С ГОВОРЯЩИМИ ИМЕНАМИ (поиск по им�
 find "$VOL" -maxdepth 6 -type d \( \
     -iname "*keepcoder*" -o -iname "stable" -o \
     -iname "app.ls" -o -iname "app_ls*" -o -iname "*sphere*" -o -iname "ls*.app" -o -iname "ls2*" \
-    -o -iname "*tukan*" -o -iname "Tox" -o -iname "*mailmate*" \
+    -o     -iname "*tukan*" -o -iname "Tox" -o -iname "*mailmate*" \
     -o -iname "*sublime*" -o -iname "*joplin*" -o -iname "*telegram*" \
     -o -iname "DataAPP" -o -iname "AppData" -o -iname "*_Data" \
     \) -not -path "*/.Trashes*" -not -path "*/.Spotlight-V100*" \
-    -not -path "*/.fseventsd*" 2>/dev/null | sort | while IFS= read -r d; do
+    -not -path "*/.fseventsd*" -not -path "*/app.ls/*" 2>/dev/null | sort | while IFS= read -r d; do
     cnt=$(ls -A "$d" 2>/dev/null | wc -l | tr -d ' ')
     echo "  $d  ($cnt объектов)"
 done
 
-hdr "5) НЕОПОЗНАННЫЕ НЕПУСТЫЕ ПАПКИ (глубина до 3, первые 40)"
+hdr "5) НЕОПОЗНАННЫЕ НЕПУСТЫЕ ПАПКИ (верхние уровни, первые 25)"
 SHOWN=0
 while IFS= read -r d; do
     [ "$d" = "$VOL" ] && continue
     [ -z "$(ls -A "$d" 2>/dev/null)" ] && continue
     [ -n "$(fp "$d")" ] && continue
-    echo "  $d"
-    preview "$d"
+    # Внутрь опознанных в секции 3 папок не лезем
+    skip=0
+    while IFS= read -r m; do
+        [ -n "$m" ] && case "$d/" in "$m/"*) skip=1; break ;; esac
+    done <<EOF
+$MATCHED
+EOF
+    [ $skip -eq 1 ] && continue
+    # Служебные/тяжелые директории проектов — не интересны
+    case "$(basename "$d")" in .git|node_modules|vendor|dist) continue ;; esac
+    cnt=$(ls -A "$d" 2>/dev/null | wc -l | tr -d ' ')
+    echo "  $d  ($cnt объектов)"
     SHOWN=$((SHOWN + 1))
-    [ $SHOWN -ge 40 ] && break
-done < <(find "$VOL" -maxdepth 3 -type d \
+    [ $SHOWN -ge 25 ] && break
+done < <(find "$VOL" -maxdepth 2 -type d \
     -not -path "*/.Trashes*" -not -path "*/.Spotlight-V100*" \
     -not -path "*/.fseventsd*" -not -path "*/.DocumentRevisions*" \
     -not -path "*/.TemporaryItems*" 2>/dev/null | sort)
@@ -242,13 +273,6 @@ show_target "Sphere"     "$HOME/Library/Application Support/app.ls"
 show_target "MailMate"   "$HOME/Library/Application Support/MailMate"
 show_target "qTox"       "$HOME/Library/Application Support/Tox"
 show_target "Tukan"      "$HOME/Library/Containers/me.tukan.tukan"
-
-echo ""
-line "Другие папки со «сферными» именами в системе (если LS2 пишет не в app.ls):"
-find "$HOME/Library/Application Support" "$HOME/Library/Containers" "$HOME/Library/Group Containers" \
-    -maxdepth 1 \( -iname "*sphere*" -o -iname "*app*ls*" -o -iname "ls2*" \) 2>/dev/null | while IFS= read -r d; do
-    line "    $d ($(ls -A "$d" 2>/dev/null | wc -l | tr -d ' ') объектов)"
-done
 
 # ------------------------------------------------------------
 hdr "7) УСТАНОВЛЕННЫЕ ПРИЛОЖЕНИЯ (/Applications)"
