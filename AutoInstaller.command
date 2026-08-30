@@ -176,7 +176,10 @@ caffeinate -dimsu &
 CAFFEINATE_PID=$!
 cleanup_exit() {
     kill "$CAFFEINATE_PID" 2>/dev/null
-    rm -f "$CONFIG_FILE" "$LOCK"
+    # Конфиг с ответами стираю ТОЛЬКО при полном успехе (фаза данных отмечена):
+    # если прогон упал — ответы не спрашиваются заново при перезапуске.
+    if stage_done data; then rm -f "$CONFIG_FILE"; fi
+    rm -f "$LOCK"
 }
 trap cleanup_exit EXIT
 
@@ -974,14 +977,19 @@ if ! stage_done apps; then
     if [ "$INSTALL_MM" = "да" ] && ! app_installed mailmate; then
         info "MailMate — ставлю."
         net_wait
-        curl -fsSL "$MM_URL" -o /tmp/MailMate.tbz 2>/dev/null && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null)
-        if [ -d "/tmp/MailMate.app" ]; then
+        MM_OK=0
+        if curl -fsSL "$MM_URL" -o /tmp/MailMate.tbz 2>/dev/null && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null); then
+            MM_OK=1
+        else
+            warn "MailMate: не скачался/не распаковался — пропускаю (поставишь вручную)."
+        fi
+        if [ "$MM_OK" = "1" ] && [ -d "/tmp/MailMate.app" ]; then
             safe_remove_app "MailMate.app"
             as_root cp -R "/tmp/MailMate.app" /Applications/ 2>/dev/null
             as_root xattr -dr com.apple.quarantine "/Applications/MailMate.app" 2>/dev/null
         fi
         rm -rf /tmp/MailMate.app /tmp/MailMate.tbz 2>/dev/null
-        verify_app MailMate MailMate
+        [ "$MM_OK" = "1" ] && verify_app MailMate MailMate
     fi
     step_prog "MailMate"
 
@@ -1017,15 +1025,11 @@ if ! stage_done apps; then
     step_prog "Tukan"
 
     if [ "$INSTALL_EXCEL" = "да" ]; then
-        if ! find /Applications -maxdepth 1 -iname "*excel*.app" 2>/dev/null | grep -q .; then
-            info "Excel — ставлю."
-            net_wait
-            install_pkg_url "$EXCEL_URL" "Excel"
-            if find /Applications -maxdepth 1 -iname "*excel*.app" 2>/dev/null | grep -q .; then
-                ok "Excel установлен."
-            else
-                warn "Excel: пакет прошел, приложения не вижу — проверь Программы."
-            fi
+        if ! app_installed excel; then
+            info "Excel — ставлю (большой, минуту терпения)."
+            install_pkg_url "$EXCEL_URL" Excel && verify_app "Microsoft Excel" Excel
+        else
+            ok "Excel уже стоит."
         fi
     fi
     step_prog "Excel"
@@ -1138,9 +1142,11 @@ fi
 if ! stage_done filevault; then
     step "FILEVAULT — ШИФРОВАНИЕ ДИСКА" "4/6"
     phase_begin
-    FV_ST=$(as_root fdesetup status 2>/dev/null)
-    if printf '%s' "$FV_ST" | grep -qi "is On"; then
-        ok "FileVault уже включен (подтверждено)."
+    FV_ST=$(fdesetup status 2>/dev/null)
+    if echo "$FV_ST" | grep -qi "FileVault is On"; then
+        ok "FileVault включен (подтверждено)."
+    elif echo "$FV_ST" | grep -qi "Encryption in progress"; then
+        ok "FileVault включен — идет шифрование в фоне (подтверждено)."
     else
         info "Включаю FileVault (шифрование всего диска)..."
         CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
@@ -1158,7 +1164,7 @@ if ! stage_done filevault; then
 </dict></plist>' "$FV_USER" "$FV_PASS_ESC"; } | sudo -S -k fdesetup enable -user "$FV_USER" -inputplist 2>&1)
         FV_OUT=""; FV_PASS_ESC=""; unset FV_OUT FV_PASS_ESC
         sleep 2
-        FV_ST=$(as_root fdesetup status 2>/dev/null)
+        FV_ST=$(fdesetup status 2>/dev/null)
         if printf '%s' "$FV_ST" | grep -qi "is On\|in progress"; then
             ok "FileVault включен — диск зашифруется в фоне (подтверждено: $(printf '%s' "$FV_ST" | head -1))."
             info "Ключ восстановления скриптом не показывается и не сохраняется нигде — так решено."
