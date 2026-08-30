@@ -243,9 +243,15 @@ REMOTE_VER=$(curl -s --max-time 5 "$REPO_RAW/MacForge.command" 2>/dev/null \
     | grep -m1 'readonly SCRIPT_VERSION=' | sed 's/.*readonly SCRIPT_VERSION="\(v[0-9.]*\).*/\1/')
 if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$SELF_VER_SHORT" ]; then
     warn "На GitHub есть новая версия скрипта: $REMOTE_VER (у тебя $SELF_VER_SHORT)."
-    read -r -p "   Скачать и перезапуститься на новой? (да/нет) [нет]: " DO_UPD
+    # В dry-run только сообщаем: перезапись файла скрипта — это тоже мутация
+    if [ "$DRY_RUN" = "1" ]; then
+        dim "dry-run: обновляться не предлагаю."
+        DO_UPD=нет
+    else
+        read -r -p "   Скачать и перезапуститься на новой? (да/нет) [нет]: " DO_UPD
+    fi
     if [ "$(yn "${DO_UPD:-нет}")" = "да" ]; then
-        if curl -s --max-time 30 -L "$REPO_RAW/MacForge.command" -o "$SELF_PATH.new" 2>/dev/null \
+        if curl -fsL --max-time 30 "$REPO_RAW/MacForge.command" -o "$SELF_PATH.new" 2>/dev/null \
             && grep -q 'readonly SCRIPT_VERSION=' "$SELF_PATH.new"; then
             chmod +x "$SELF_PATH.new"; mv "$SELF_PATH.new" "$SELF_PATH"
             ok "Обновился до $REMOTE_VER. Перезапускаю..."
@@ -261,6 +267,8 @@ fi
 # РЕЕСТР ПРИЛОЖЕНИЙ — вся информация о приложениях в одном месте.
 # Чтобы добавить приложение: одна строка в app_keys + ветки в функциях ниже.
 # ------------------------------------------------------------
+# >>> TESTABLE registry — область между маркерами вырезает tests/run_tests.sh
+# и проверяет НАСТОЯЩИЙ код этих функций. Не добавлять сюда top-level команды.
 TG_GLOB="*keepcoder.Telegram"
 tg_local_dir() {
     local d
@@ -339,6 +347,7 @@ fp_any() {
     done
     return 1
 }
+# <<< TESTABLE registry
 
 # ------------------------------------------------------------
 # ПРЕДПОЛЕТНАЯ ПРОВЕРКА: что уже стоит и куда уже подключено
@@ -351,27 +360,17 @@ APP_TELEGRAM=0; APP_SUBLIME=0; APP_SPHERE=0; APP_TUKAN=0; APP_VERACRYPT=0; APP_M
 [ -d "/Applications/VeraCrypt.app" ] && APP_VERACRYPT=1
 [ -d "/Applications/MailMate.app" ] && APP_MAILMATE=1
 
-precheck_link() { [ -L "$(app_src "$1")" ] && echo 1 || echo 0; }
-PRE_TG=$(precheck_link telegram)
-PRE_ST=$(precheck_link sublime)
-PRE_LS=$(precheck_link sphere)
-PRE_MM=$(precheck_link mailmate)
-PRE_QTOX=$(precheck_link qtox)
-PRE_TUKAN=$(precheck_link tukan)
-
-HAS_TG_DATA=0; HAS_ST_DATA=0; HAS_LS_DATA=0; HAS_MM_DATA=0; HAS_QTOX_DATA=0; HAS_TUKAN_DATA=0
-fp_telegram "$(app_src telegram)" 2>/dev/null && HAS_TG_DATA=1
-fp_sublime  "$(app_src sublime)"  2>/dev/null && HAS_ST_DATA=1
-fp_sphere   "$(app_src sphere)"   2>/dev/null && HAS_LS_DATA=1
-fp_mailmate "$(app_src mailmate)" 2>/dev/null && HAS_MM_DATA=1
-fp_qtox     "$(app_src qtox)"     2>/dev/null && HAS_QTOX_DATA=1
-fp_tukan    "$(app_src tukan)"    2>/dev/null && HAS_TUKAN_DATA=1
+# Единый источник правды — реестр app_keys. Раньше рядом жили PRE_TG/PRE_ST/...
+# с ручным маппингом ключей на имена переменных и eval; добавление приложения
+# требовало правок в трех местах и легко рассинхронивалось.
+precheck_link() { [ -L "$(app_src "$1")" ]; }
+precheck_data() { "fp_$1" "$(app_src "$1")" 2>/dev/null; }
 
 step "ПРЕДПОЛЕТНАЯ ПРОВЕРКА / PREFLIGHT CHECK"
 for k in $(app_keys); do
-    lbl=$(app_label "$k"); pre="PRE_$(echo "$k" | tr 'a-z' 'A-Z')"; [ "$k" = "sphere" ] && pre=PRE_LS; [ "$k" = "qtox" ] && pre=PRE_QTOX; [ "$k" = "sublime" ] && pre=PRE_ST; [ "$k" = "telegram" ] && pre=PRE_TG; [ "$k" = "mailmate" ] && pre=PRE_MM
-    eval "ln=\$$pre"
-    if [ "$ln" = "1" ]; then ok "$lbl — данные уже подключены к диску."
+    lbl=$(app_label "$k")
+    if precheck_link "$k"; then ok "$lbl — данные уже подключены к диску."
+    elif precheck_data "$k"; then dim "$lbl — еще не подключен (локальные данные есть)."
     else dim "$lbl — еще не подключен."; fi
 done
 hr
@@ -469,7 +468,7 @@ if [ "$DRY_RUN" = "1" ]; then
     for k in $(app_keys); do
         lbl=$(app_label "$k"); bndl=$(app_bundle "$k")
         [ "$k" = "mailmate" ] && [ "$INSTALL_MM" != "да" ] && [ "$APP_MAILMATE" = "0" ] && continue
-        [ "$k" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && [ "$HAS_QTOX_DATA" = "0" ] && continue
+        [ "$k" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && ! precheck_data qtox && continue
         if [ -n "$(find /Applications -maxdepth 1 -iname "$bndl.app" 2>/dev/null | head -1)" ]; then
             echo "  = $lbl: приложение стоит; данные — $( [ -L "$(app_src "$k")" ] && echo 'уже на диске' || echo 'подключу к диску')"
         else
@@ -926,29 +925,46 @@ safe_remove_app() {
     as_root rm -rf "/Applications/$appbase" 2>/dev/null
 }
 
-install_dmg() {
-    local url="$1" name="$2" try tmp
+# --- Единая политика загрузки ------------------------------------------------
+# Раньше curl вызывался с разными наборами флагов (где-то -fsSL, где-то -L без
+# -f, таймауты 5/10/без), из-за чего 404 однажды сохранялся как «пакет».
+# Здесь одно место: -f (HTTP-ошибка = ненулевой код), таймаут соединения,
+# защита от зависшей загрузки, 3 попытки, проверка минимального размера.
+FETCH_RETRIES=3
+FETCH_MIN_SIZE=1048576
+fetch() { # fetch <url> <файл> [имя] [мин_размер] [запасной_url_со_2й_попытки]
+    local url="$1" out="$2" name="${3:-файл}" min="${4:-$FETCH_MIN_SIZE}" alt="${5:-}"
+    local try=1 sz cur
     net_wait
-    for try in 1 2 3; do
-        tmp="/tmp/$name.dmg"
-        # -f: HTTP-ошибка (404 и т.п.) = ненулевой код, а не «успех» с html-страницей
-        if curl -fL "$url" -o "$tmp" --progress-bar 2>&1; then
-            local sz
-            sz=$(stat -f%z "$tmp" 2>/dev/null)
-            if [ -n "$sz" ] && [ "$sz" -gt 1048576 ]; then break; fi
-            warn "$name: попытка $try — скачалось что-то кривое ($((${sz:-0} / 1024)) КБ)."
+    while [ "$try" -le "$FETCH_RETRIES" ]; do
+        cur="$url"
+        [ "$try" -ge 2 ] && [ -n "$alt" ] && cur="$alt"
+        rm -f "$out" 2>/dev/null
+        if curl -fL "$cur" -o "$out" --progress-bar \
+                --connect-timeout 15 --speed-limit 1024 --speed-time 60 2>&1; then
+            sz=$(stat -f%z "$out" 2>/dev/null)
+            case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
+            if [ "$sz" -ge "$min" ]; then return 0; fi
+            warn "$name: попытка $try — скачалось что-то кривое ($((sz / 1024)) КБ)."
         else
             warn "$name: попытка $try не скачалась."
         fi
-        # Для Sphere вторая попытка — сборка под ДРУГУЮ архитектуру: раньше сюда
-        # подставлялся ровно тот же URL, что и в первой попытке, и смысла не было.
-        if [ "$try" = "2" ] && [ "$name" = "Sphere" ]; then
-            if [ "$ARCH" = "arm64" ]; then url="$SPHERE_URL_X86"; else url="$SPHERE_URL_ARM64"; fi
-            warn "$name: пробую сборку под другую архитектуру."
-        fi
-        [ "$try" = "3" ] && { err "$name: не скачалось после 3 попыток. Пропускаю."; return 1; }
-        sleep 3
+        try=$((try + 1))
+        [ "$try" -le "$FETCH_RETRIES" ] && sleep 3
     done
+    err "$name: не скачалось после $FETCH_RETRIES попыток. Пропускаю."
+    rm -f "$out" 2>/dev/null
+    return 1
+}
+
+install_dmg() {
+    local url="$1" name="$2" tmp alt=""
+    tmp="/tmp/$name.dmg"
+    # Для Sphere запасная попытка — сборка под ДРУГУЮ архитектуру
+    if [ "$name" = "Sphere" ]; then
+        if [ "$ARCH" = "arm64" ]; then alt="$SPHERE_URL_X86"; else alt="$SPHERE_URL_ARM64"; fi
+    fi
+    fetch "$url" "$tmp" "$name" "$FETCH_MIN_SIZE" "$alt" || return 1
     local mp
     mp=$(hdiutil attach "$tmp" -nobrowse -quiet 2>/dev/null | grep -o '/Volumes/.*' | head -1)
     if [ -z "$mp" ]; then err "$name: dmg не смонтировался."; rm -f "$tmp"; return 1; fi
@@ -981,17 +997,8 @@ install_dmg() {
 }
 
 install_pkg_url() {
-    local url="$1" name="$2" try sz rc
-    net_wait
-    for try in 1 2 3; do
-        # -f как в install_dmg: 404 больше не сохраняется как «пакет»
-        curl -fL "$url" -o "/tmp/$name.pkg" --progress-bar 2>&1
-        sz=$(stat -f%z "/tmp/$name.pkg" 2>/dev/null)
-        if [ -n "$sz" ] && [ "$sz" -gt 1048576 ]; then break; fi
-        warn "$name: попытка $try — пакет кривой или не скачался."
-        [ "$try" = "3" ] && { err "$name: не скачался после 3 попыток. Пропускаю."; rm -f "/tmp/$name.pkg"; return 1; }
-        sleep 3
-    done
+    local url="$1" name="$2" rc
+    fetch "$url" "/tmp/$name.pkg" "$name" || return 1
     as_root installer -pkg "/tmp/$name.pkg" -target / >/dev/null 2>&1; rc=$?
     rm -f "/tmp/$name.pkg"
     # Без этого статусом функции был бы rm, и провал установки выглядел успехом
@@ -1014,8 +1021,8 @@ if ! stage_done apps; then
 
     if ! app_installed sublime; then
         info "Sublime Text — ставлю."
-        net_wait
-        curl -fsSL "$SUBLIME_URL" -o /tmp/Sublime.zip 2>/dev/null && (cd /tmp && unzip -o -q Sublime.zip 2>/dev/null)
+        fetch "$SUBLIME_URL" /tmp/Sublime.zip "Sublime Text" \
+            && (cd /tmp && unzip -o -q Sublime.zip 2>/dev/null)
         if [ -d "/tmp/Sublime Text.app" ]; then
             safe_remove_app "Sublime Text.app"
             as_root cp -R "/tmp/Sublime Text.app" /Applications/ 2>/dev/null
@@ -1039,9 +1046,8 @@ if ! stage_done apps; then
 
     if [ "$INSTALL_MM" = "да" ] && ! app_installed mailmate; then
         info "MailMate — ставлю."
-        net_wait
         MM_OK=0
-        if curl -fsSL "$MM_URL" -o /tmp/MailMate.tbz 2>/dev/null && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null); then
+        if fetch "$MM_URL" /tmp/MailMate.tbz "MailMate" && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null); then
             MM_OK=1
         else
             warn "MailMate: не скачался/не распаковался — пропускаю (поставишь вручную)."
@@ -1510,6 +1516,7 @@ fi
 # Опознание папок — ТОЛЬКО по содержимому. Имена папок не важны:
 # app.ls, App_LS2, Sphere, Telegram_Data, как-угодно-названо — найдем все.
 # ------------------------------------------------------------
+# >>> TESTABLE migrate — см. комментарий у первого маркера
 # Корень данных на диске: голосование по найденным опознанным папкам.
 # Если опознанная папка лежит внутри "*_Data" — корень на уровень выше.
 resolve_data_dir() {
@@ -1592,6 +1599,72 @@ space_ok() { # space_ok <источник> <том>
     [ "$free_kb" -gt "$need_kb" ]
 }
 
+# Сверка копии с оригиналом: число объектов И суммарный размер.
+# "ls -A непустой" пропускал оборванную копию (диск отключили на середине),
+# после чего оригинал удалялся — терялась часть профиля.
+copy_matches() { # copy_matches <источник> <копия>
+    local n1 n2 k1 k2
+    n1=$(find "$1" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+    n2=$(find "$2" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+    [ "$n1" = "$n2" ] || { warn "Копия неполная: объектов $n2 из $n1."; return 1; }
+    k1=$(du -sk "$1" 2>/dev/null | awk '{print $1}')
+    k2=$(du -sk "$2" 2>/dev/null | awk '{print $1}')
+    case "$k1$k2" in ''|*[!0-9]*) return 0 ;; esac
+    # Допуск 5%: размер каталога на другой ФС отличается из-за размера блока
+    [ "$k2" -ge $(( k1 - k1 / 20 )) ] || { warn "Копия меньше оригинала: ${k2} КБ против ${k1} КБ."; return 1; }
+    return 0
+}
+
+# Перенос данных на диск БЕЗ окна, в котором данных нет нигде.
+# Было: cp -> rm -rf оригинала -> ln -s. Если между вторым и третьим шагом
+# процесс убить, пользователь остается без данных и без ссылки.
+# Стало: копия во временное имя -> проверка -> mv на место (атомарный в
+# пределах тома) -> оригинал переименовываем в .bak -> симлинк -> и только
+# после успешной проверки ссылки удаляем .bak.
+migrate_to_disk() { # migrate_to_disk <источник> <цель на диске> <подпись>
+    local src="$1" dst="$2" lbl="$3" stage bak
+    stage="$dst.partial.$$"
+    bak="$src.bak.$$"
+    rm -rf "$stage" 2>/dev/null
+    mkdir -p "$(dirname "$dst")" 2>/dev/null
+    if ! mkdir -p "$stage" 2>/dev/null || ! cp -R "$src/." "$stage/" 2>/dev/null; then
+        err "$lbl: копирование не удалось — данные оставил на месте."
+        rm -rf "$stage" 2>/dev/null; return 1
+    fi
+    if ! copy_matches "$src" "$stage"; then
+        err "$lbl: копия не совпала с оригиналом — данные оставил на месте."
+        rm -rf "$stage" 2>/dev/null; return 1
+    fi
+    # Цель могла остаться пустой от прошлого прогона — она не нужна
+    [ -d "$dst" ] && [ -z "$(ls -A "$dst" 2>/dev/null)" ] && rmdir "$dst" 2>/dev/null
+    if [ -e "$dst" ]; then
+        err "$lbl: на диске уже есть $dst — не перезаписываю, разберись руками."
+        rm -rf "$stage" 2>/dev/null; return 1
+    fi
+    if ! mv "$stage" "$dst" 2>/dev/null; then
+        err "$lbl: не смог переместить копию в $dst."
+        rm -rf "$stage" 2>/dev/null; return 1
+    fi
+    # Оригинал не удаляем, а отодвигаем: если ссылка не создастся — вернем
+    if ! mv "$src" "$bak" 2>/dev/null; then
+        err "$lbl: не смог отодвинуть локальную папку — данные на диске ($dst), ссылку сделай руками."
+        return 1
+    fi
+    if ln -s "$dst" "$src" 2>/dev/null && [ -d "$src" ]; then
+        rm -rf "$bak" 2>/dev/null
+        return 0
+    fi
+    # Откат: ссылки нет — возвращаем локальные данные, чтобы не остаться ни с чем.
+    # Копию на диске тоже убираем: иначе следующий прогон упрется в непустую
+    # цель и откажется переносить.
+    rm -f "$src" 2>/dev/null
+    mv "$bak" "$src" 2>/dev/null
+    rm -rf "$dst" 2>/dev/null
+    err "$lbl: ссылку создать не смог (права Терминала?) — вернул данные на место."
+    return 1
+}
+# <<< TESTABLE migrate
+
 if ! stage_done data; then
     step "ДАННЫЕ ПРИЛОЖЕНИЙ -> НА СЕКРЕТНЫЙ ДИСК" "6/6"
     phase_begin
@@ -1642,19 +1715,9 @@ if ! stage_done data; then
                 continue
             fi
             info "$lbl: переношу локальные данные на диск..."
-            # Копируем СОДЕРЖИМОЕ (src/. в dst/), а не саму папку: если dst уже
-            # существует (пустой после прошлого прогона), "cp -R src dst" клал бы
-            # данные в dst/<имя src>, приложение потом не находило свой профиль.
-            mkdir -p "$dst" 2>/dev/null
-            if cp -R "$src/." "$dst/" 2>/dev/null && [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
-                rm -rf "$src" 2>/dev/null
-                if ln -s "$dst" "$src" 2>/dev/null; then
-                    ok "$lbl: локальные данные перенесены и подключены."; continue
-                fi
-                err "$lbl: данные УЖЕ на диске ($dst), но ссылку создать не смог — создай ее руками."
-                continue
+            if migrate_to_disk "$src" "$dst" "$lbl"; then
+                ok "$lbl: локальные данные перенесены и подключены."
             fi
-            err "$lbl: перенести не смог — данные оставил на месте, проверь руками."
             continue
         fi
 
@@ -1669,25 +1732,43 @@ if ! stage_done data; then
                 fi
             fi
             xattr -dr com.apple.quarantine "$APP_MATCH" 2>/dev/null
+            # Bundle ID вместо имени: pkill -f "Sublime Text" — подстрочный матч
+            # по всей командной строке, мог поймать чужой процесс (в т.ч. этот
+            # скрипт, открытый в редакторе с таким же именем в пути).
+            APP_BID=$(defaults read "$APP_MATCH/Contents/Info" CFBundleIdentifier 2>/dev/null)
             open -a "$APP_MATCH" 2>/dev/null
-            sleep 8
-            if ! pgrep -fl "$(basename "$APP_MATCH" .app)" >/dev/null 2>&1; then
-                warn "$lbl: не поднялся (Gatekeeper?) — запускаю еще раз..."
-                open -a "$APP_MATCH" 2>/dev/null; sleep 8
+            # Ждем появления папки, а не фиксированные 8 секунд: на быстрой
+            # машине уходим раньше, на медленной — дожидаемся.
+            waited=0
+            while [ "$waited" -lt 20 ]; do
+                [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ] && break
+                sleep 1; waited=$((waited + 1))
+            done
+            if [ ! -d "$src" ] || [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+                warn "$lbl: папку пока не создал — пробую еще раз..."
+                open -a "$APP_MATCH" 2>/dev/null
+                waited=0
+                while [ "$waited" -lt 20 ]; do
+                    [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ] && break
+                    sleep 1; waited=$((waited + 1))
+                done
             fi
-            pkill -f "$(basename "$APP_MATCH" .app)" 2>/dev/null; sleep 2
+            if [ -n "$APP_BID" ]; then
+                osascript -e "tell application id \"$APP_BID\" to quit" 2>/dev/null
+                sleep 2
+                pkill -f "$APP_MATCH/Contents/MacOS/" 2>/dev/null
+            else
+                pkill -f "$APP_MATCH/Contents/MacOS/" 2>/dev/null
+            fi
+            sleep 2
             if [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ]; then
                 if ! space_ok "$src" "$VOL_NAME"; then
                     err "$lbl: на диске НЕ ХВАТИТ места — папку оставил локально, освободи диск и запусти снова."
                     continue
                 fi
-                # Тоже содержимым и с проверкой копии перед удалением оригинала
-                mkdir -p "$dst" 2>/dev/null
-                if cp -R "$src/." "$dst/" 2>/dev/null && [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
-                    rm -rf "$src" 2>/dev/null
-                    ln -s "$dst" "$src" 2>/dev/null && ok "$lbl: папка создана приложением и подключена к диску." && continue
+                if migrate_to_disk "$src" "$dst" "$lbl"; then
+                    ok "$lbl: папка создана приложением и подключена к диску."
                 fi
-                err "$lbl: скопировать созданную папку не смог — оставил локально."
                 continue
             fi
             warn "$lbl: приложение папку не создало — делаю пустую и подключаю."
