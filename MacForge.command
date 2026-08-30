@@ -886,7 +886,10 @@ net_wait() {
     sp=$(net_speed)
     if [ "$sp" -gt 0 ] && [ "$sp" -lt 102400 ]; then
         warn "Канал медленный (~$((sp / 1024)) КБ/с) — загрузки будут долгими."
-    elif [ "$sp" -ge 102400 ]; then
+    elif [ "$sp" -lt 1048576 ]; then
+        # 100 КБ/с..1 МБ/с целочисленно давали «~0 МБ/с» — показываем в КБ/с
+        dim "Канал: ~$((sp / 1024)) КБ/с."
+    else
         dim "Канал: ~$((sp / 1048576)) МБ/с."
     fi
 }
@@ -1628,12 +1631,19 @@ if ! stage_done data; then
                 continue
             fi
             info "$lbl: переношу локальные данные на диск..."
-            mkdir -p "$(dirname "$dst")" 2>/dev/null
-            if cp -R "$src" "$dst" 2>/dev/null && [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
+            # Копируем СОДЕРЖИМОЕ (src/. в dst/), а не саму папку: если dst уже
+            # существует (пустой после прошлого прогона), "cp -R src dst" клал бы
+            # данные в dst/<имя src>, приложение потом не находило свой профиль.
+            mkdir -p "$dst" 2>/dev/null
+            if cp -R "$src/." "$dst/" 2>/dev/null && [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
                 rm -rf "$src" 2>/dev/null
-                ln -s "$dst" "$src" 2>/dev/null && ok "$lbl: локальные данные перенесены и подключены." && continue
+                if ln -s "$dst" "$src" 2>/dev/null; then
+                    ok "$lbl: локальные данные перенесены и подключены."; continue
+                fi
+                err "$lbl: данные УЖЕ на диске ($dst), но ссылку создать не смог — создай ее руками."
+                continue
             fi
-            err "$lbl: перенести не смог — проверь руками."
+            err "$lbl: перенести не смог — данные оставил на месте, проверь руками."
             continue
         fi
 
@@ -1660,9 +1670,14 @@ if ! stage_done data; then
                     err "$lbl: на диске НЕ ХВАТИТ места — папку оставил локально, освободи диск и запусти снова."
                     continue
                 fi
-                mkdir -p "$(dirname "$dst")" 2>/dev/null
-                cp -R "$src" "$dst" 2>/dev/null && rm -rf "$src" 2>/dev/null
-                ln -s "$dst" "$src" 2>/dev/null && ok "$lbl: папка создана приложением и подключена к диску." && continue
+                # Тоже содержимым и с проверкой копии перед удалением оригинала
+                mkdir -p "$dst" 2>/dev/null
+                if cp -R "$src/." "$dst/" 2>/dev/null && [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
+                    rm -rf "$src" 2>/dev/null
+                    ln -s "$dst" "$src" 2>/dev/null && ok "$lbl: папка создана приложением и подключена к диску." && continue
+                fi
+                err "$lbl: скопировать созданную папку не смог — оставил локально."
+                continue
             fi
             warn "$lbl: приложение папку не создало — делаю пустую и подключаю."
         fi
