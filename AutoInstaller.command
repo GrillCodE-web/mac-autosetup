@@ -143,6 +143,7 @@ stage_mark() { echo "$1" >> "$STAGE_FILE"; }
 PHASE_NAMES=""; PHASE_TIMES=""; _PHASE_T0=0
 phase_begin() { _PHASE_T0=$SECONDS; }
 phase_end() { # phase_end <имя фазы>
+    [ -z "$1" ] && return 0
     local d=$(( SECONDS - _PHASE_T0 ))
     PHASE_NAMES="$PHASE_NAMES$1\n"
     PHASE_TIMES="$PHASE_TIMES$d\n"
@@ -221,7 +222,7 @@ SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 REPO_RAW="https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main"
 SELF_VER_SHORT="${SCRIPT_VERSION%%-*}"          # например v12.5
 REMOTE_VER=$(curl -s --max-time 5 "$REPO_RAW/AutoInstaller.command" 2>/dev/null \
-    | grep -m1 'readonly SCRIPT_VERSION=' | sed 's/.*"\(v[0-9.]*\).*/\1/')
+    | grep -m1 'readonly SCRIPT_VERSION=' | sed 's/.*readonly SCRIPT_VERSION="\(v[0-9.]*\).*/\1/')
 if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$SELF_VER_SHORT" ]; then
     warn "На GitHub есть новая версия скрипта: $REMOTE_VER (у тебя $SELF_VER_SHORT)."
     read -r -p "   Скачать и перезапуститься на новой? (да/нет) [нет]: " DO_UPD
@@ -494,18 +495,6 @@ if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
     stage_mark user
     phase_end "Учетная запись"
 fi
-
-# Маленький верификатор: написали ключ -> сразу перечитали
-verify_default() { # verify_default <описание> <plist> <ключ> <ожидание> [root]
-    local desc="$1" plist="$2" key="$3" want="$4" asroot="$5" got
-    if [ "$asroot" = "root" ]; then
-        got=$(as_root defaults read "$plist" "$key" 2>/dev/null)
-    else
-        got=$(defaults read "$plist" "$key" 2>/dev/null)
-    fi
-    if [ "$got" = "$want" ]; then ok "$desc — подтверждено."
-    else warn "$desc — записано, но перечитать не смог (значение: ${got:-пусто}). Проверь глазами."; fi
-}
 
 # ------------------------------------------------------------
 # ФАЗА 2: БАЗОВАЯ ЗАЩИТА (каждый пункт — с перечитыванием)
@@ -1490,7 +1479,7 @@ if ! stage_done data; then
         [ "$key" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && ! app_installed qtox && continue
         src=$(app_src "$key"); lbl=$(app_label "$key")
         if [ -L "$src" ] && [ -e "$src" ]; then :; else
-            ALL_OK=1; err "$lbl — НЕ подключен. Смотри сообщения выше."
+            ALL_OK=0; err "$lbl — НЕ подключен. Смотри сообщения выше."
         fi
     done
     ding_subtle
