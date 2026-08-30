@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 # ============================================================
 #  PREINSTALL AUDIT — АУДИТ ДИСКА И СИСТЕМЫ — v3
@@ -84,7 +84,11 @@ else
             i=$((i + 1)); echo "    $i) $v"
         done
         read -r -p "   Номер: " CH
-        VOL=$(printf '%s\n' "$CANDS" | sed -n "${CH}p")
+        # Без проверки нечисловой ввод ронял sed с ошибкой разбора команды
+        case "$CH" in
+            ''|*[!0-9]*) warn "Нужен номер из списка — ничего не выбрано." ;;
+            *) [ "$CH" -ge 1 ] && [ "$CH" -le "$CNT" ] && VOL=$(printf '%s\n' "$CANDS" | sed -n "${CH}p") ;;
+        esac
     fi
     if [ -z "$VOL" ] || [ ! -d "$VOL" ]; then
         echo ""
@@ -96,7 +100,11 @@ else
         while [ $n -lt 180 ]; do
             sleep 5
             VOL=$(vc_cli_vol)
-            [ -z "$VOL" ] && VOL=$(candidate_vols | head -1)
+            # Берем кандидата, только если он ровно один: head -1 мог подцепить
+            # постороннюю флешку или том Time Machine.
+            if [ -z "$VOL" ] && [ "$(candidate_vols | grep -c .)" = "1" ]; then
+                VOL=$(candidate_vols | head -1)
+            fi
             [ -n "$VOL" ] && [ -d "$VOL" ] && break
             n=$((n + 1))
         done
@@ -123,7 +131,7 @@ for d in "$VOL"/*/; do
     if [ "$cnt" = "0" ]; then
         echo -e "  ${GREY}$base/  (ПУСТАЯ)${NC}"
     else
-        echo "  ${BOLD}$base/${NC}  ($cnt объектов, ${sz:-?})"
+        echo -e "  ${BOLD}$base/${NC}  ($cnt объектов, ${sz:-?})"
         ls -A "$d" 2>/dev/null | head -8 | while IFS= read -r e; do
             if [ -d "$d$e" ]; then echo "      $e/"; else echo "      $e"; fi
         done

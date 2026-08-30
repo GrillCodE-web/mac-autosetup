@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 # ============================================================
 #  АВТОНАСТРОЙКА MAC — ПОЛНЫЙ АВТОМАТ (v12)
@@ -8,9 +8,14 @@
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
+# Режим определяем ПЕРВЫМ делом: dry-run обещает «без единой мутации», поэтому
+# он не должен успеть ничего удалить/создать до вывода плана.
+DRY_RUN=0
+[ "$1" = "--dry-run" ] && DRY_RUN=1
+
 # Логи НЕ ведутся принципиально: любой файл с историей настройки — это след,
 # который потом восстанавливается с диска. Все видно только на экране.
-rm -f /tmp/autosetup_log.txt /tmp/autosetup_commands.txt 2>/dev/null
+[ "$DRY_RUN" = "0" ] && rm -f /tmp/autosetup_log.txt /tmp/autosetup_commands.txt 2>/dev/null
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -106,8 +111,7 @@ yn() {
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/autosetup.conf"
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    cat > "$CONFIG_FILE" <<'EOF'
+CONFIG_DEFAULTS=$(cat <<'EOF'
 # Автоконфиг скрипта настройки. Создан самим скриптом, удаляется после прогона.
 # Править можно между запусками; если удалить — создастся заново с дефолтами.
 FUSET_URL="https://github.com/macos-fuse-t/fuse-t/releases/download/1.2.7/fuse-t-macos-installer-1.2.7.pkg"
@@ -125,12 +129,15 @@ DISPLAY_SLEEP=5
 AUTOLOGOUT_MIN=30
 LS_EXTENSIONS="txt md markdown csv tsv json xml yaml yml log ini conf cfg env sh py js toml sql"
 EOF
+)
+if [ -f "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+else
+    # В dry-run значения берем в память и файл НЕ создаем
+    eval "$CONFIG_DEFAULTS"
+    [ "$DRY_RUN" = "0" ] && printf '%s\n' "$CONFIG_DEFAULTS" > "$CONFIG_FILE"
 fi
-. "$CONFIG_FILE"
 
-# --- Режимы ------------------------------------------------------------------
-DRY_RUN=0
-[ "$1" = "--dry-run" ] && DRY_RUN=1
 [ "$DRY_RUN" = "1" ] && warn "РЕЖИМ DRY-RUN: только покажу план, ничего не изменю."
 
 # Возобновление после падения: отметки о завершенных фазах живут в /tmp
@@ -140,24 +147,27 @@ stage_done() { grep -qx "$1" "$STAGE_FILE" 2>/dev/null; }
 stage_mark() { echo "$1" >> "$STAGE_FILE"; }
 
 # Тайминг фаз: phase_begin в начале, phase_end после stage_mark — сводка в финале
-PHASE_NAMES=""; PHASE_TIMES=""; _PHASE_T0=0
+# Копим строки вида "<секунды>|<имя фазы>" с НАСТОЯЩИМИ переводами строк:
+# два параллельных списка с литеральным "\n" раньше не разбирались и ломали t2s.
+PHASE_LOG=""; _PHASE_T0=0
 phase_begin() { _PHASE_T0=$SECONDS; }
 phase_end() { # phase_end <имя фазы>
     [ -z "$1" ] && return 0
     local d=$(( SECONDS - _PHASE_T0 ))
-    PHASE_NAMES="$PHASE_NAMES$1\n"
-    PHASE_TIMES="$PHASE_TIMES$d\n"
+    PHASE_LOG="${PHASE_LOG}${d}|${1}
+"
 }
 phase_summary() {
-    local i=0 name t
-    [ -z "$PHASE_NAMES" ] && return 0
+    local line t name
+    [ -z "$PHASE_LOG" ] && return 0
     sub "ВРЕМЯ ПО ФАЗАМ"
-    while IFS= read -r name; do
-        i=$((i + 1))
-        t=$(printf '%s' "$PHASE_TIMES" | sed -n "${i}p")
-        [ -n "$name" ] && printf '    %s  %s\n' "$(t2s "${t:-0}")" "$name"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        t=${line%%|*}; name=${line#*|}
+        case "$t" in ''|*[!0-9]*) t=0 ;; esac
+        printf '    %s  %s\n' "$(t2s "$t")" "$name"
     done <<EOF
-$(printf '%b' "$PHASE_NAMES")
+$PHASE_LOG
 EOF
     ok "Весь прогон: $(t2s $SECONDS)"
 }
@@ -167,24 +177,15 @@ as_root() { printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; }
 # Проверка: мы на маке?
 if [ "$(uname)" != "Darwin" ]; then
     err "Этот скрипт работает только на macOS."
-    rm -f "$CONFIG_FILE"
+    [ "$DRY_RUN" = "0" ] && rm -f "$CONFIG_FILE"
     exit 1
 fi
 
-# На время настройки — не давать Mac гасить экран и засыпать
-caffeinate -dimsu &
-CAFFEINATE_PID=$!
-cleanup_exit() {
-    kill "$CAFFEINATE_PID" 2>/dev/null
-    # Конфиг с ответами стираю ТОЛЬКО при полном успехе (фаза данных отмечена):
-    # если прогон упал — ответы не спрашиваются заново при перезапуске.
-    if stage_done data; then rm -f "$CONFIG_FILE"; fi
-    rm -f "$LOCK"
-}
-trap cleanup_exit EXIT
-
-# Защита от двойного запуска: второй экземпляр не стартует, пока жив первый
 LOCK=/tmp/autosetup.lock
+if [ "$DRY_RUN" = "0" ]; then
+# Защита от двойного запуска: второй экземпляр не стартует, пока жив первый.
+# Лок захватываем ДО установки trap: иначе выход второго экземпляра снес бы
+# лок (и конфиг) живого первого.
 if [ -f "$LOCK" ]; then
     OLD_PID=$(cat "$LOCK" 2>/dev/null)
     if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
@@ -194,6 +195,20 @@ if [ -f "$LOCK" ]; then
     rm -f "$LOCK"
 fi
 echo $$ > "$LOCK" 2>/dev/null
+
+# На время настройки — не давать Mac гасить экран и засыпать
+caffeinate -dimsu &
+CAFFEINATE_PID=$!
+cleanup_exit() {
+    kill "$CAFFEINATE_PID" 2>/dev/null
+    # Конфиг с ответами стираю ТОЛЬКО при полном успехе (фаза данных отмечена):
+    # если прогон упал — ответы не спрашиваются заново при перезапуске.
+    if stage_done data; then rm -f "$CONFIG_FILE"; fi
+    # Снимаем ТОЛЬКО свой лок: чужой (живого экземпляра) не трогаем
+    [ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"
+}
+trap cleanup_exit EXIT
+fi  # конец блока «только реальный прогон»: в dry-run ни лока, ни caffeinate
 
 ARCH=$(uname -m)
 clear
@@ -294,6 +309,7 @@ app_bundle() {
         telegram) echo "Telegram" ;; sublime) echo "Sublime Text" ;;
         sphere)   echo "*sphere*" ;; mailmate) echo "MailMate" ;;
         qtox)     echo "qTox" ;;     tukan) echo "*tukan*" ;;
+        excel)    echo "Microsoft Excel" ;;
     esac
 }
 
@@ -369,8 +385,20 @@ echo "   Обычная — безопаснее: работаешь из нее
 read -r -p "   Создаем? (да/нет) [нет]: " CREATE_USER
 CREATE_USER=$(yn "${CREATE_USER:-нет}")
 if [ "$CREATE_USER" = "да" ]; then
-    read -r -p "   Логин латиницей (пример: work): " NEW_USER
+    # Логин валидируем: пустой или с пробелами/кириллицей создал бы битую запись
+    while true; do
+        read -r -p "   Логин латиницей, без пробелов (пример: work): " NEW_USER
+        # Явный список символов, а не [a-z]: в UTF-8-локали диапазон захватил бы
+        # и заглавные, и часть не-латиницы.
+        case "$NEW_USER" in
+            ""|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
+                err "Только строчные латинские буквы, цифры, _ и -." ;;
+            -*|[0-9]*) err "Логин должен начинаться с буквы." ;;
+            *) break ;;
+        esac
+    done
     read -r -p "   Отображаемое имя (пример: Work): " NEW_USER_NAME
+    NEW_USER_NAME=${NEW_USER_NAME:-$NEW_USER}
     while true; do
         read -rs -p "   Пароль для НОВОЙ учетки: " USER_PASS; echo ""
         read -rs -p "   Еще раз: " USER_PASS2; echo ""
@@ -380,11 +408,16 @@ if [ "$CREATE_USER" = "да" ]; then
 fi
 
 q 2 "Пароль от ТЕКУЩЕЙ учетной записи (админа) — нужен для настройки системы."
-while true; do
-    read -rs -p "   Введи пароль (не отображается): " ADMIN_PASS; echo ""
-    if printf '%s\n' "$ADMIN_PASS" | sudo -S -k true 2>/dev/null; then ok "Пароль верный, поехали."; break; fi
-    err "Не подошел. Еще раз."
-done
+if [ "$DRY_RUN" = "1" ]; then
+    # В dry-run пароль не нужен: sudo не вызывается, а лишний запрос пугает
+    dim "dry-run: пароль не спрашиваю."
+else
+    while true; do
+        read -rs -p "   Введи пароль (не отображается): " ADMIN_PASS; echo ""
+        if printf '%s\n' "$ADMIN_PASS" | sudo -S -k true 2>/dev/null; then ok "Пароль верный, поехали."; break; fi
+        err "Не подошел. Еще раз."
+    done
+fi
 
 # Проверка Full Disk Access у Терминала — заранее, а не сюрпризом в конце
 FDA=1
@@ -469,22 +502,28 @@ as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate Automatical
 if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
     step "УЧЕТНАЯ ЗАПИСЬ / USER ACCOUNT" "1/6"
     phase_begin
+    USER_STAGE_OK=0
     if id "$NEW_USER" &>/dev/null; then
         warn "Учетка «$NEW_USER» уже существует — пропускаю."
+        USER_STAGE_OK=1
     else
         info "Создаю «$NEW_USER»..."
         OK_USER=1
         UID_TRY=$(dscl . -list /Users UniqueID 2>/dev/null | awk '$2>=500 && $2<600 {print $2}' | sort -n | tail -1)
         UID_TRY=$(( ${UID_TRY:-500} + 1 ))
-        for c in \
-            "dscl . -create /Users/$NEW_USER" \
-            "dscl . -create /Users/$NEW_USER UserShell /bin/bash" \
-            "dscl . -create /Users/$NEW_USER RealName $NEW_USER_NAME" \
-            "dscl . -create /Users/$NEW_USER UniqueID $UID_TRY" \
-            "dscl . -create /Users/$NEW_USER PrimaryGroupID 20" \
-            "dscl . -create /Users/$NEW_USER NFSHomeDirectory /Users/$NEW_USER"; do
-            if ! as_root $c 2>/dev/null; then err "dscl: не выполнено «$c»"; OK_USER=0; break; fi
-        done
+        # Каждый вызов — отдельной командой с кавычками: имя из двух слов
+        # («Work Mac») в общей строке разъезжалось на лишние аргументы dscl.
+        dscl_step() { # dscl_step <описание> <аргументы dscl...>
+            local d="$1"; shift
+            as_root dscl . "$@" 2>/dev/null && return 0
+            err "dscl: не выполнено — $d"; OK_USER=0; return 1
+        }
+        dscl_step "создание записи"   -create "/Users/$NEW_USER" \
+            && dscl_step "оболочка"   -create "/Users/$NEW_USER" UserShell /bin/bash \
+            && dscl_step "имя"        -create "/Users/$NEW_USER" RealName "$NEW_USER_NAME" \
+            && dscl_step "UID"        -create "/Users/$NEW_USER" UniqueID "$UID_TRY" \
+            && dscl_step "группа"     -create "/Users/$NEW_USER" PrimaryGroupID 20 \
+            && dscl_step "домашняя"   -create "/Users/$NEW_USER" NFSHomeDirectory "/Users/$NEW_USER"
         if [ "$OK_USER" = "1" ]; then
             # Пароль — аргументом: пайп сломался бы (его съел бы sudo -S), а dscl
             # мог повиснуть на интерактивном запросе. В ps на миг виден — приемлемо.
@@ -493,12 +532,15 @@ if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
         fi
         if [ "$OK_USER" = "1" ] && id "$NEW_USER" &>/dev/null; then
             ok "Учетка «$NEW_USER» создана и входит в систему (проверено)."
+            USER_STAGE_OK=1
         else
             err "Учетка не создалась корректно — сделай вручную: Настройки -> Пользователи и группы."
         fi
         USER_PASS=""; USER_PASS2=""
     fi
-    stage_mark user
+    # Фазу отмечаем выполненной ТОЛЬКО при успехе: иначе следующий запуск
+    # молча пропустит создание учетки, которой нет.
+    [ "${USER_STAGE_OK:-0}" = "1" ] && stage_mark user
     phase_end "Учетная запись"
 fi
 
@@ -893,9 +935,11 @@ install_dmg() {
         else
             warn "$name: попытка $try не скачалась."
         fi
+        # Для Sphere вторая попытка — сборка под ДРУГУЮ архитектуру: раньше сюда
+        # подставлялся ровно тот же URL, что и в первой попытке, и смысла не было.
         if [ "$try" = "2" ] && [ "$name" = "Sphere" ]; then
-            url="$SPHERE_URL_X86"; [ "$ARCH" = "arm64" ] && url="$SPHERE_URL_ARM64"
-            warn "$name: пробую зеркало/другой URL."
+            if [ "$ARCH" = "arm64" ]; then url="$SPHERE_URL_X86"; else url="$SPHERE_URL_ARM64"; fi
+            warn "$name: пробую сборку под другую архитектуру."
         fi
         [ "$try" = "3" ] && { err "$name: не скачалось после 3 попыток. Пропускаю."; return 1; }
         sleep 3
@@ -913,27 +957,41 @@ install_dmg() {
             err "$name: не скопировался в Программы."; hdiutil detach "$mp" -quiet 2>/dev/null; rm -f "$tmp"; return 1
         fi
     else
-        local tpkg
+        local tpkg rc=1
         tpkg=$(find "$mp" -name "*.pkg" 2>/dev/null | head -1)
-        [ -n "$tpkg" ] && as_root installer -pkg "$tpkg" -target / 2>/dev/null
+        if [ -n "$tpkg" ]; then
+            as_root installer -pkg "$tpkg" -target / >/dev/null 2>&1; rc=$?
+            [ "$rc" != "0" ] && err "$name: installer вернул ошибку ($rc)."
+        else
+            err "$name: в образе нет ни .app, ни .pkg."
+        fi
+        if [ "$rc" != "0" ]; then
+            hdiutil detach "$mp" -quiet 2>/dev/null; rm -f "$tmp"; return 1
+        fi
     fi
     hdiutil detach "$mp" -quiet 2>/dev/null
     rm -f "$tmp"
+    # Явный return: иначе статусом функции был бы результат rm
+    return 0
 }
 
 install_pkg_url() {
-    local url="$1" name="$2" try sz
+    local url="$1" name="$2" try sz rc
     net_wait
     for try in 1 2 3; do
-        curl -L "$url" -o "/tmp/$name.pkg" --progress-bar 2>&1
+        # -f как в install_dmg: 404 больше не сохраняется как «пакет»
+        curl -fL "$url" -o "/tmp/$name.pkg" --progress-bar 2>&1
         sz=$(stat -f%z "/tmp/$name.pkg" 2>/dev/null)
         if [ -n "$sz" ] && [ "$sz" -gt 1048576 ]; then break; fi
         warn "$name: попытка $try — пакет кривой или не скачался."
         [ "$try" = "3" ] && { err "$name: не скачался после 3 попыток. Пропускаю."; rm -f "/tmp/$name.pkg"; return 1; }
         sleep 3
     done
-    as_root installer -pkg "/tmp/$name.pkg" -target / 2>/dev/null
+    as_root installer -pkg "/tmp/$name.pkg" -target / >/dev/null 2>&1; rc=$?
     rm -f "/tmp/$name.pkg"
+    # Без этого статусом функции был бы rm, и провал установки выглядел успехом
+    [ "$rc" = "0" ] || { err "$name: installer вернул ошибку ($rc)."; return 1; }
+    return 0
 }
 
 if ! stage_done apps; then
@@ -1027,7 +1085,7 @@ if ! stage_done apps; then
     if [ "$INSTALL_EXCEL" = "да" ]; then
         if ! app_installed excel; then
             info "Excel — ставлю (большой, минуту терпения)."
-            install_pkg_url "$EXCEL_URL" Excel && verify_app "Microsoft Excel" Excel
+            install_pkg_url "$EXCEL_URL" Excel && verify_app "Microsoft Excel" "Microsoft Excel"
         else
             ok "Excel уже стоит."
         fi
@@ -1142,11 +1200,14 @@ fi
 if ! stage_done filevault; then
     step "FILEVAULT — ШИФРОВАНИЕ ДИСКА" "4/6"
     phase_begin
+    FV_STAGE_OK=0
     FV_ST=$(fdesetup status 2>/dev/null)
     if echo "$FV_ST" | grep -qi "FileVault is On"; then
         ok "FileVault включен (подтверждено)."
+        FV_STAGE_OK=1
     elif echo "$FV_ST" | grep -qi "Encryption in progress"; then
         ok "FileVault включен — идет шифрование в фоне (подтверждено)."
+        FV_STAGE_OK=1
     else
         info "Включаю FileVault (шифрование всего диска)..."
         CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
@@ -1168,12 +1229,15 @@ if ! stage_done filevault; then
         if printf '%s' "$FV_ST" | grep -qi "is On\|in progress"; then
             ok "FileVault включен — диск зашифруется в фоне (подтверждено: $(printf '%s' "$FV_ST" | head -1))."
             info "Ключ восстановления скриптом не показывается и не сохраняется нигде — так решено."
+            FV_STAGE_OK=1
         else
             err "FileVault не подтвердился: $(printf '%s' "$FV_ST" | head -1)."
             warn "Включи руками: Настройки -> Конфиденциальность и безопасность -> FileVault."
         fi
     fi
-    stage_mark filevault
+    # Отмечаем фазу только при подтвержденном FileVault: иначе следующий
+    # запуск пропустил бы незашифрованный диск.
+    [ "$FV_STAGE_OK" = "1" ] && stage_mark filevault
     phase_end "FileVault"
 fi
 
@@ -1292,7 +1356,8 @@ if ! stage_done disk; then
         sleep 2
         D_NAME=$(disk_field "$DISK_DEV" MediaName)
         D_SIZE=$(disk_field "$DISK_DEV" TotalSize)
-        [ -n "$D_SIZE" ] && D_SIZE=$(echo "$D_SIZE" | awk '{printf "%.0f", $1/1073741824" ГБ"}')
+        # Единицы — в строке формата: конкатенация внутри %.0f их съедала
+        [ -n "$D_SIZE" ] && D_SIZE=$(echo "$D_SIZE" | awk '{printf "%.0f ГБ", $1/1073741824}')
         info "Вижу новый диск: ${D_NAME:-без имени} ${D_SIZE:+($D_SIZE)} — устройство /dev/$DISK_DEV"
         read -r -p "   Это ОН? (да/нет) [да]: " THIS_IS_IT
         THIS_IS_IT=$(yn "${THIS_IS_IT:-да}")
@@ -1387,22 +1452,24 @@ fi
 # Корень данных на диске: голосование по найденным опознанным папкам.
 # Если опознанная папка лежит внутри "*_Data" — корень на уровень выше.
 resolve_data_dir() {
-    local vol="$1" key d root votes best count
+    local vol="$1" key d root votes best
     votes=""
     while IFS= read -r d; do
         key=$(fp_any "$d") || continue
         root=$(dirname "$d")
         case "$(basename "$root")" in *_Data|*_data|Telegram|telegram) root=$(dirname "$root") ;; esac
-        case " $votes " in *"\n$root\n"*) ;; *) votes="$votes$root
-" ;; esac
+        # Пишем КАЖДЫЙ голос: прежний «дедуп» по "\n$root\n" не срабатывал
+        # никогда (в переменной реальные переводы строк), а сам по себе он
+        # обнулял бы смысл голосования ниже.
+        votes="$votes$root
+"
     done < <(find "$vol" -maxdepth 4 -type d \
         -not -path "*/.Trashes*" -not -path "*/.Spotlight-V100*" \
         -not -path "*/.fseventsd*" -not -path "*/.DocumentRevisions*" \
         -not -path "*/.TemporaryItems*" 2>/dev/null)
-    best=""; count=0
+    best=""
     if [ -n "$votes" ]; then
         best=$(printf '%s' "$votes" | grep . | sort | uniq -c | sort -rn | head -1 | awk '{$1=""; sub(/^ /,""); print}')
-        count=$(printf '%s' "$votes" | grep -c . || true)
     fi
     if [ -n "$best" ] && [ "$best" != "$vol" ]; then echo "$best"; return 0; fi
     if [ -d "$vol/DataAPP" ]; then echo "$vol/DataAPP"; return 0; fi
@@ -1597,9 +1664,13 @@ as_root pmset -a displaysleep "$DISPLAY_SLEEP" 2>/dev/null
 as_root pmset -a sleep 0 2>/dev/null
 ok "Экран гаснет через $DISPLAY_SLEEP мин, автовыход через $AUTOLOGOUT_MIN мин (как в конфиге)."
 
+# В Загрузках чистим ТОЛЬКО то, что могли скачать сами: раньше сносились
+# все *.dmg/*.pkg/*.zip, включая личные файлы пользователя.
 DL="$HOME/Downloads"
-for f in "$DL"/*.dmg "$DL"/*.pkg "$DL"/*.zip; do
-    [ -f "$f" ] && rm -f "$f" 2>/dev/null
+for n in Telegram Sublime Sphere MailMate qTox Tukan VeraCrypt Excel fuse-t; do
+    for f in "$DL/$n".dmg "$DL/$n".pkg "$DL/$n".zip; do
+        [ -f "$f" ] && rm -f "$f" 2>/dev/null
+    done
 done
 rm -f /tmp/*.pkg /tmp/*.dmg /tmp/*.zip /tmp/Sublime* /tmp/MailMate* /tmp/hitoolbox.plist /tmp/diskinfo.plist /tmp/disks.plist 2>/dev/null
 
@@ -1624,7 +1695,7 @@ ADMIN_PASS=""; unset ADMIN_PASS USER_PASS USER_PASS2
 # ------------------------------------------------------------
 run_selfcheck() {
     step "САМОПРОВЕРКА / SELF-CHECK"
-    local key src lbl tgt n bad=0 total=0 good=0
+    local key src lbl tgt n bad=0 total=0 good=0 warnc=0
     local ROWS=""
     row() { # row <статус-символ> <цвет> <имя> <деталь>
         # Паддинг по СИМВОЛАМ (${#} знает UTF-8), а не по байтам, как printf %-14s —
@@ -1646,6 +1717,7 @@ run_selfcheck() {
                 elif [ "$n" -gt 0 ]; then
                     good=$((good + 1)); row "✓" "$GREEN" "$lbl" "на диске ($n объектов, нестандартная папка)"
                 else
+                    warnc=$((warnc + 1))
                     row "▲" "$YELLOW" "$lbl" "папка на диске пустая (заполнится при запуске)"
                 fi
             else
@@ -1684,10 +1756,14 @@ run_selfcheck() {
     done
     echo -e "  ${CYAN}└$(rep "─" $W)┘${NC}"
     echo ""
-    if [ "$bad" = "0" ]; then
+    # Желтые пункты считаем отдельно: раньше они не попадали ни в good, ни в
+    # bad — итог не сходился, а вывод все равно говорил «всё зелёное».
+    if [ "$bad" = "0" ] && [ "$warnc" = "0" ]; then
         echo -e "  ${GREEN}${BOLD}✓ САМОПРОВЕРКА: $good/$total — всё зелёное.${NC}"
+    elif [ "$bad" = "0" ]; then
+        echo -e "  ${YELLOW}${BOLD}▲ САМОПРОВЕРКА: $good/$total зелёные, $warnc с замечанием (▲), ошибок нет.${NC}"
     else
-        echo -e "  ${YELLOW}${BOLD}▲ САМОПРОВЕРКА: $good/$total зелёные, $bad — смотри выше.${NC}"
+        echo -e "  ${YELLOW}${BOLD}▲ САМОПРОВЕРКА: $good/$total зелёные, $bad с ошибкой (✗), $warnc с замечанием (▲) — смотри выше.${NC}"
     fi
 }
 
@@ -1718,6 +1794,20 @@ echo "    • FileVault: шифрование включено (ключ скр�
 echo "    • данные приложений — на секретном диске, система смотрит на них через ссылки"
 echo "    • раскладки ABC+Русская (Ctrl+Space), часовой пояс по IP, Wi-Fi по выбору"
 echo ""
+# Обещание из вопроса про Полный доступ к диску: собираем всё, что не встало
+# автоматически. Раньше флаги *_MANUAL выставлялись, но нигде не читались.
+MANUAL_LIST=""
+[ "${SL_MANUAL:-0}" = "1" ]    && MANUAL_LIST="$MANUAL_LIST    • Блокировка «сразу»: Настройки -> Экран блокировки\n"
+[ "${FW_MANUAL:-0}" = "1" ]    && MANUAL_LIST="$MANUAL_LIST    • Брандмауэр и невидимость: Настройки -> Сеть -> Брандмауэр\n"
+[ "${SHARE_MANUAL:-0}" = "1" ] && MANUAL_LIST="$MANUAL_LIST    • Общий доступ (экран/ARD/SSH): Настройки -> Общий доступ\n"
+[ "${KB_MANUAL:-0}" = "1" ]    && MANUAL_LIST="$MANUAL_LIST    • Русская раскладка: Настройки -> Клавиатура -> Источники ввода\n"
+[ "${FDA:-1}" = "0" ]          && MANUAL_LIST="$MANUAL_LIST    • Полный доступ к диску Терминалу: Настройки -> Конфиденциальность и безопасность\n"
+if [ -n "$MANUAL_LIST" ]; then
+    echo -e "  ${YELLOW}${BOLD}НУЖНО ДОДЕЛАТЬ РУКАМИ:${NC}"
+    printf '%b' "$MANUAL_LIST"
+    echo ""
+fi
+
 echo -e "  ${YELLOW}${BOLD}ПРОВЕРЬ В КОНЦЕ:${NC}"
 echo "    1) Флажок раскладки в строке меню сверху (если нет — нажми Ctrl+Space)"
 echo "    2) Вставь секретный диск -> VeraCrypt -> Mount -> запусти Telegram/Sphere"
