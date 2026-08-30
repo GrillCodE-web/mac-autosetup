@@ -21,7 +21,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v12.1-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, dry-run, возобновление после падения"
+readonly SCRIPT_VERSION="v12.4-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices (все, не только .txt), Bluetooth без сторонних утилит, все расширения видны в Finder, dry-run, возобновление после падения"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -542,6 +542,14 @@ if ! stage_done hardening; then
     if [ "$REC" = "0" ]; then ok "Недавние приложения в Dock скрыты (подтверждено)."
     else warn "Dock: перечитать не смог — проверь Настройки -> Рабочий стол и Dock."; fi
 
+    # Показывать ВСЕ расширения файлов в Finder (против подлова photo.jpg.app)
+    defaults write NSGlobalDomain AppleShowAllExtensions -bool true 2>/dev/null
+    if [ "$(defaults read NSGlobalDomain AppleShowAllExtensions 2>/dev/null)" = "1" ]; then
+        ok "В Finder показываются все расширения файлов (подтверждено)."
+    else
+        warn "Расширения файлов: перечитать не смог."
+    fi
+
     # Gatekeeper и SIP должны быть ВКЛЮЧЕНЫ — здесь только проверка (не трогаем)
     if spctl --status 2>/dev/null | grep -qi "assessments enabled"; then
         ok "Gatekeeper включен (подтверждено)."
@@ -644,28 +652,11 @@ if ! stage_done radio; then
     # Авто-смену пояса в системе НЕ включаем (по решению владельца: IP скачут
     # по штатам/городам — фоновая смена сделает только хуже).
 
-    # Bluetooth: на время настройки включаю (мышка/клава), в конце выключу
-    BLUEUTIL=""
-    if [ -x "/opt/homebrew/bin/blueutil" ]; then BLUEUTIL=/opt/homebrew/bin/blueutil;
-    elif [ -x "/usr/local/bin/blueutil" ]; then BLUEUTIL=/usr/local/bin/blueutil; fi
-    if [ -z "$BLUEUTIL" ]; then
-        for BURL in "https://github.com/toy/blueutil/releases/download/v2.14.0/blueutil-arm64.zip" "https://github.com/toy/blueutil/releases/download/v2.14.0/blueutil-x86_64.zip"; do
-            case "$BURL" in *arm64*) [ "$ARCH" != "arm64" ] && continue ;; *x86_64*) [ "$ARCH" != "x86_64" ] && continue ;; esac
-            curl -sL "$BURL" -o /tmp/blueutil.zip 2>/dev/null && (cd /tmp && unzip -o -q blueutil.zip 2>/dev/null) || continue
-            if [ -f /tmp/blueutil ]; then
-                xattr -d com.apple.quarantine /tmp/blueutil 2>/dev/null
-                chmod +x /tmp/blueutil
-                if /tmp/blueutil --version >/dev/null 2>&1; then BLUEUTIL=/tmp/blueutil; break; fi
-            fi
-            rm -f /tmp/blueutil /tmp/blueutil.zip 2>/dev/null
-        done
-    fi
-    if [ -n "$BLUEUTIL" ]; then
-        if [ "$("$BLUEUTIL" -p 2>/dev/null)" != "1" ]; then "$BLUEUTIL" -p 1 2>/dev/null; fi
-        ok "Bluetooth: пока включил (для мышки/клавы на время настройки)."
-    else
-        warn "Bluetooth: скачать blueutil не смог — в конце выключи его руками (меню сверху справа)."
-    fi
+    # Bluetooth: никаких сторонних утилит не качаю. Просто открываю панель
+    # Настроек с Bluetooth и честно пишу, что выключить — если не подключены
+    # беспроводные клава/мышка. (blueutil выпилен по решению владельца.)
+    open "x-apple.systempreferences:com.apple.Bluetooth" 2>/dev/null
+    info "Bluetooth: открыл панель. Если НЕ подключены беспроводные клава/мышка — выключи тумблер."
     stage_mark radio
 fi
 
@@ -903,14 +894,61 @@ if ! stage_done apps; then
         fi
     fi
 
-    # Текстовые расширения -> Linken Sphere (если стоит duti)
-    if app_installed sphere && command -v duti >/dev/null 2>&1; then
-        LS_BUNDLE="com.ls.lsapp"
-        LS_EXT_OK=0
-        for ext in $LS_EXTENSIONS; do
-            duti -s "$LS_BUNDLE" ".$ext" all 2>/dev/null && LS_EXT_OK=$((LS_EXT_OK + 1))
-        done
-        [ "$LS_EXT_OK" -gt 0 ] && ok "Текстовые файлы открываются в Linken Sphere ($LS_EXT_OK расширений)."
+    # Текстовые расширения -> Sublime Text через LaunchServices (secure plist).
+    # Раньше был duti: он на свежих macOS ставил часть расширений и молча падал
+    # на остальных — потому .txt открывался, а .md и др. нет. Идём напрямую
+    # в plist upsert'ом и ПЕРЕЧИТЫВАЕМ результат на каждом расширении.
+    if app_installed sublime; then
+        SUB_BUNDLE=$(defaults read "/Applications/Sublime Text.app/Contents/Info" CFBundleIdentifier 2>/dev/null)
+        if [ -n "$SUB_BUNDLE" ]; then
+            LSDOMAIN="com.apple.LaunchServices/com.apple.launchservices.secure"
+            ls_upsert() { # ls_upsert <uti> <bundle>
+                local uti="$1" bundle="$2" n i cur
+                n=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null | grep -c "Dict {" || true)
+                i=0
+                while [ "$i" -lt "${n:-0}" ]; do
+                    cur=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers:$i:LSItemContentTypes" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null)
+                    if [ "$cur" = "$uti" ]; then
+                        /usr/libexec/PlistBuddy -c "Set :LSHandlers:$i:LSHandlerRoleAll $bundle" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null && return 0
+                        /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i:LSHandlerRoleAll string $bundle" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null && return 0
+                        return 1
+                    fi
+                    i=$((i + 1))
+                done
+                /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i dict" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null || return 1
+                /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i:LSItemContentTypes string $uti" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null
+                /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i:LSHandlerRoleAll string $bundle" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null
+            }
+            ls_verify() { # ls_verify <uti> <bundle>
+                local uti="$1" bundle="$2" n i cur h
+                n=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null | grep -c "Dict {" || true)
+                i=0
+                while [ "$i" -lt "${n:-0}" ]; do
+                    cur=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers:$i:LSItemContentTypes" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null)
+                    if [ "$cur" = "$uti" ]; then
+                        h=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers:$i:LSHandlerRoleAll" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null)
+                        [ "$h" = "$bundle" ] && return 0
+                        return 1
+                    fi
+                    i=$((i + 1))
+                done
+                return 1
+            }
+            # Регистрируем Sublime в LaunchServices, чтобы bundle id был известен
+            /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/Sublime Text.app" 2>/dev/null
+            EXT_OK=0; EXT_FAIL=""
+            for ext in $LS_EXTENSIONS; do
+                ls_upsert "$ext" "$SUB_BUNDLE" 2>/dev/null
+                if ls_verify "$ext" "$SUB_BUNDLE"; then EXT_OK=$((EXT_OK + 1)); else EXT_FAIL="$EXT_FAIL .$ext"; fi
+            done
+            killall cfprefsd 2>/dev/null
+            TOT=$(echo $LS_EXTENSIONS | wc -w | tr -d ' ')
+            if [ "$EXT_OK" = "$TOT" ]; then
+                ok "Текстовые расширения -> Sublime Text: все $EXT_OK подтверждены."
+            else
+                warn "Расширения: подтверждено $EXT_OK из $TOT. Не встали:$EXT_FAIL — в Finder: правой кнопкой -> Открыть в программе -> Sublime Text -> «Всегда»."
+            fi
+        fi
     fi
 
     # VeraCrypt + FUSE-T (нужны для секретного диска)
@@ -1361,7 +1399,7 @@ DL="$HOME/Downloads"
 for f in "$DL"/*.dmg "$DL"/*.pkg "$DL"/*.zip; do
     [ -f "$f" ] && rm -f "$f" 2>/dev/null
 done
-rm -f /tmp/*.pkg /tmp/*.dmg /tmp/*.zip /tmp/Sublime* /tmp/MailMate* /tmp/blueutil* /tmp/hitoolbox.plist /tmp/diskinfo.plist /tmp/disks.plist 2>/dev/null
+rm -f /tmp/*.pkg /tmp/*.dmg /tmp/*.zip /tmp/Sublime* /tmp/MailMate* /tmp/hitoolbox.plist /tmp/diskinfo.plist /tmp/disks.plist 2>/dev/null
 
 rm -f "$HOME/.bash_history" "$HOME/.zsh_history" "$HOME/.python_history" "$HOME/.lesshst" "$HOME/.viminfo" 2>/dev/null
 find "$HOME/Library/Application Support/com.apple.sharedfilelist" -name "*.sfl*" -delete 2>/dev/null
