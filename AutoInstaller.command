@@ -1219,10 +1219,16 @@ wait_new_disk() {
 # Том, смонтированный VeraCrypt: сперва спрашиваем сам VeraCrypt (VC --list),
 # только потом — скан кандидатов в /Volumes
 vc_mounted_vol() {
-    local out
+    local out v
     if [ -x "$VC" ]; then
-        out=$("$VC" --text --list 2>/dev/null | grep -o '/Volumes/.*' | head -1)
-        [ -n "$out" ] && [ -d "$out" ] && { echo "$out"; return 0; }
+        # Берем ВСЕ смонтированные тома VC, а не только первый —
+        # с двумя вставленными дисками head -1 мог взять не тот.
+        out=$("$VC" --text --list 2>/dev/null | grep -o '/Volumes/.*')
+        while IFS= read -r v; do
+            [ -n "$v" ] && [ -d "$v" ] && { echo "$v"; return 0; }
+        done <<EOF
+$out
+EOF
     fi
     local cands
     cands=$(candidate_vols)
@@ -1235,7 +1241,8 @@ vc_mounted_vol() {
 
 candidate_vols() {
     local v boot
-    boot=$(basename "$(df / 2>/dev/null | tail -1 | awk '{print $NF}')" 2>/dev/null)
+    # df -P: одна строка на том — длинное имя устройства не ломает парсинг колонок
+    boot=$(basename "$(df -P / 2>/dev/null | tail -1 | awk '{print $NF}')" 2>/dev/null)
     for v in /Volumes/*; do
         [ -d "$v" ] || continue
         [ -L "$v" ] && continue
@@ -1386,9 +1393,9 @@ resolve_data_dir() {
         key=$(fp_any "$d") || continue
         root=$(dirname "$d")
         case "$(basename "$root")" in *_Data|*_data|Telegram|telegram) root=$(dirname "$root") ;; esac
-        votes="$votes$root
-"
-    done < <(find "$vol" -maxdepth 6 -type d \
+        case " $votes " in *"\n$root\n"*) ;; *) votes="$votes$root
+" ;; esac
+    done < <(find "$vol" -maxdepth 4 -type d \
         -not -path "*/.Trashes*" -not -path "*/.Spotlight-V100*" \
         -not -path "*/.fseventsd*" -not -path "*/.DocumentRevisions*" \
         -not -path "*/.TemporaryItems*" 2>/dev/null)
