@@ -65,9 +65,32 @@
 
 1. Стереть Mac и поставить чистую macOS (Части 1–3 мануала, при установке не
    подключаться к Wi-Fi, только кабель).
-2. Скопировать эту папку на Mac, кликнуть `AutoInstaller.command` правой
-   кнопкой — Открыть (или `bash AutoInstaller.command` из Терминала).
+2. Запустить скрипт — либо одной командой прямо с GitHub (ниже), либо
+   скопировать папку на Mac и кликнуть `AutoInstaller.command` правой кнопкой — Открыть.
 3. Следовать экрану: 5 вопросов, пару раз Enter, вставить диск по запросу.
+
+## Запуск прямо с GitHub (ничего не копируя на Mac)
+
+Открой Терминал (Cmd+Пробел → «Терминал») и вставь одну строку:
+
+**AutoInstaller (основной скрипт):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main/AutoInstaller.command -o /tmp/AutoInstaller.command && bash /tmp/AutoInstaller.command
+```
+
+**Аудит диска (Preinstall_Audit):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main/Preinstall_Audit.command -o /tmp/Preinstall_Audit.command && bash /tmp/Preinstall_Audit.command
+```
+
+Скачивается во временный `/tmp`, запускается сразу, после перезагрузки /tmp
+чистится сам. Не `curl | bash`, а именно скачать-в-файл и запустить: скрипту
+нужен настоящий терминальный ввод (вопросы, пароли), через пайп он бы не доехал.
+
+> Если репозиторий станет приватным — raw-ссылка без токена вернет 404.
+> Тогда копируй файлы на флешке, как раньше.
 4. Ответ **«да»** на вопрос «диск УЖЕ зашифрован VeraCrypt?» — и существующий
    диск не будет тронут.
 5. В конце скрипт сам покажет таблицу самопроверки — всё должно быть зелёным.
