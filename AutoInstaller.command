@@ -21,7 +21,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v12.4-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices (все, не только .txt), Bluetooth без сторонних утилит, все расширения видны в Finder, dry-run, возобновление после падения"
+readonly SCRIPT_VERSION="v12.6-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices (все, не только .txt), Bluetooth без сторонних утилит, все расширения видны в Finder, dry-run, возобновление после падения, тайминг фаз, автообновление скрипта с GitHub, проверка версии macOS"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -105,7 +105,6 @@ yn() {
 # --- Конфиг: создается сам рядом со скриптом, удаляется после прогона -------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/autosetup.conf"
-chmod +x "$SCRIPT_DIR/ПРОВЕРИТЬ.command" 2>/dev/null
 
 if [ ! -f "$CONFIG_FILE" ]; then
     cat > "$CONFIG_FILE" <<'EOF'
@@ -139,6 +138,28 @@ DRY_RUN=0
 STAGE_FILE="/tmp/autosetup_stage"
 stage_done() { grep -qx "$1" "$STAGE_FILE" 2>/dev/null; }
 stage_mark() { echo "$1" >> "$STAGE_FILE"; }
+
+# Тайминг фаз: phase_begin в начале, phase_end после stage_mark — сводка в финале
+PHASE_NAMES=""; PHASE_TIMES=""; _PHASE_T0=0
+phase_begin() { _PHASE_T0=$SECONDS; }
+phase_end() { # phase_end <имя фазы>
+    local d=$(( SECONDS - _PHASE_T0 ))
+    PHASE_NAMES="$PHASE_NAMES$1\n"
+    PHASE_TIMES="$PHASE_TIMES$d\n"
+}
+phase_summary() {
+    local i=0 name t
+    [ -z "$PHASE_NAMES" ] && return 0
+    sub "ВРЕМЯ ПО ФАЗАМ"
+    while IFS= read -r name; do
+        i=$((i + 1))
+        t=$(printf '%s' "$PHASE_TIMES" | sed -n "${i}p")
+        [ -n "$name" ] && printf '    %s  %s\n' "$(t2s "${t:-0}")" "$name"
+    done <<EOF
+$(printf '%b' "$PHASE_NAMES")
+EOF
+    ok "Весь прогон: $(t2s $SECONDS)"
+}
 
 as_root() { printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; }
 
@@ -185,6 +206,37 @@ info "$(L 'Скрипт настроит этот Mac сам — просто с
 info "$(L 'Вопросов минимум, дальше всё идет без тебя.' 'Minimal questions, then it runs unattended.')"
 dim "$(L 'Логи не ведутся — никаких следов в системе не остается.' 'No logs are written — no traces left in the system.')"
 [ -s "$STAGE_FILE" ] && warn "$(L 'Найдены отметки прошлого прерванного прогона — завершенные фазы пропущу.' 'Found marks of an interrupted run — completed phases will be skipped.')"
+
+# Проверка версии macOS: тестирован на 13-15 (Ventura/Sonoma/Sequoia) и 26 (Tahoe).
+# На других — предупреждаю, но продолжаю (вдруг повезло).
+MACOS_VER=$(sw_vers -productVersion 2>/dev/null)
+MACOS_MAJOR=${MACOS_VER%%.*}
+case "$MACOS_MAJOR" in
+    13|14|15|26) : ;;
+    *) warn "macOS $MACOS_VER не входит в тестированные (13-15, 26). Продолжаю, но смотри глазами." ;;
+esac
+
+# Автопроверка обновления скрипта на GitHub (не навязчиво: только если есть сеть)
+SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+REPO_RAW="https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main"
+SELF_VER_SHORT="${SCRIPT_VERSION%%-*}"          # например v12.5
+REMOTE_VER=$(curl -s --max-time 5 "$REPO_RAW/AutoInstaller.command" 2>/dev/null \
+    | grep -m1 'readonly SCRIPT_VERSION=' | sed 's/.*"\(v[0-9.]*\).*/\1/')
+if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$SELF_VER_SHORT" ]; then
+    warn "На GitHub есть новая версия скрипта: $REMOTE_VER (у тебя $SELF_VER_SHORT)."
+    read -r -p "   Скачать и перезапуститься на новой? (да/нет) [нет]: " DO_UPD
+    if [ "$(yn "${DO_UPD:-нет}")" = "да" ]; then
+        if curl -s --max-time 30 -L "$REPO_RAW/AutoInstaller.command" -o "$SELF_PATH.new" 2>/dev/null \
+            && grep -q 'readonly SCRIPT_VERSION=' "$SELF_PATH.new"; then
+            chmod +x "$SELF_PATH.new"; mv "$SELF_PATH.new" "$SELF_PATH"
+            ok "Обновился до $REMOTE_VER. Перезапускаю..."
+            rm -f "$LOCK"   # exec сохраняет PID — иначе новый процесс упрется в свой же лок
+            exec "$SELF_PATH" "$@"
+        else
+            err "Не скачалось — остаюсь на $SELF_VER_SHORT."; rm -f "$SELF_PATH.new"
+        fi
+    fi
+fi
 
 # ------------------------------------------------------------
 # РЕЕСТР ПРИЛОЖЕНИЙ — вся информация о приложениях в одном месте.
@@ -411,6 +463,7 @@ fi
 # ------------------------------------------------------------
 if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
     step "УЧЕТНАЯ ЗАПИСЬ / USER ACCOUNT" "1/6"
+    phase_begin
     if id "$NEW_USER" &>/dev/null; then
         warn "Учетка «$NEW_USER» уже существует — пропускаю."
     else
@@ -439,6 +492,7 @@ if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
         USER_PASS=""; USER_PASS2=""
     fi
     stage_mark user
+    phase_end "Учетная запись"
 fi
 
 # Маленький верификатор: написали ключ -> сразу перечитали
@@ -458,6 +512,7 @@ verify_default() { # verify_default <описание> <plist> <ключ> <ож�
 # ------------------------------------------------------------
 if ! stage_done hardening; then
     step "БАЗОВАЯ ЗАЩИТА / BASELINE SECURITY" "2/6"
+    phase_begin
 
     # Пароль сразу после сна/заставки — ОДИН раз, с проверкой
     SL_MANUAL=0
@@ -622,6 +677,7 @@ if ! stage_done hardening; then
 
     ding_subtle
     stage_mark hardening
+    phase_end "Базовая защита"
 fi
 
 # ------------------------------------------------------------
@@ -629,6 +685,7 @@ fi
 # ------------------------------------------------------------
 if ! stage_done radio; then
     step "СЕТЬ И РАДИО / NETWORK & RADIO"
+    phase_begin
     case "$WIFI_MODE" in
         1)
             WIFI_SVC=""
@@ -678,6 +735,7 @@ if ! stage_done radio; then
     open "x-apple.systempreferences:com.apple.Bluetooth" 2>/dev/null
     info "Bluetooth: открыл панель. Если НЕ подключены беспроводные клава/мышка — выключи тумблер."
     stage_mark radio
+    phase_end "Сеть и радио"
 fi
 
 # ------------------------------------------------------------
@@ -687,6 +745,7 @@ fi
 # ------------------------------------------------------------
 if ! stage_done keyboard; then
     step "КЛАВИАТУРА / KEYBOARD"
+    phase_begin
     TMPH=/tmp/hitoolbox.plist
     KB_PLIST="$HOME/Library/Preferences/com.apple.HIToolbox.plist"
     [ -f "$KB_PLIST" ] && cp "$KB_PLIST" "$TMPH" || plutil -create xml1 "$TMPH" 2>/dev/null
@@ -747,6 +806,7 @@ if ! stage_done keyboard; then
         pause
     fi
     stage_mark keyboard
+    phase_end "Клавиатура"
 fi
 
 # ------------------------------------------------------------
@@ -848,6 +908,7 @@ install_pkg_url() {
 
 if ! stage_done apps; then
     step "УСТАНОВКА ПРИЛОЖЕНИЙ / INSTALLING APPS" "3/6"
+    phase_begin
     step_prog_init 7
 
     if ! app_installed telegram; then
@@ -1040,6 +1101,7 @@ if ! stage_done apps; then
     fi
     ding_subtle
     stage_mark apps
+    phase_end "Установка приложений"
 fi
 
 # ------------------------------------------------------------
@@ -1048,6 +1110,7 @@ fi
 # ------------------------------------------------------------
 if ! stage_done filevault; then
     step "FILEVAULT — ШИФРОВАНИЕ ДИСКА" "4/6"
+    phase_begin
     FV_ST=$(as_root fdesetup status 2>/dev/null)
     if printf '%s' "$FV_ST" | grep -qi "is On"; then
         ok "FileVault уже включен (подтверждено)."
@@ -1067,6 +1130,7 @@ if ! stage_done filevault; then
         fi
     fi
     stage_mark filevault
+    phase_end "FileVault"
 fi
 
 # ------------------------------------------------------------
@@ -1159,6 +1223,7 @@ wait_vc_mount() {
 
 if ! stage_done disk; then
     step "СЕКРЕТНЫЙ ДИСК / ENCRYPTED DISK" "5/6"
+    phase_begin
     if ! net_ok; then err "Нет интернета — без него приложения не скачать. Подключи сеть и запусти заново."; exit 1; fi
 
     DISK_DEV=""
@@ -1237,6 +1302,7 @@ if ! stage_done disk; then
     ok "Секретный диск подключен: $VOL_NAME"
     ding
     stage_mark disk
+    phase_end "Секретный диск"
 fi
 
 VOL_NAME=$(vc_mounted_vol)
@@ -1245,6 +1311,7 @@ VOL_NAME=$(vc_mounted_vol)
 # Гигиена секретного тома: не индексировать Spotlight (имена файлов не должны
 # попадать в системный индекс) и не бэкапить в Time Machine.
 if ! stage_done vol_hygiene; then
+    phase_begin
     as_root mdutil -i off "$VOL_NAME" 2>/dev/null
     if mdutil -s "$VOL_NAME" 2>/dev/null | grep -qi "disabled"; then
         ok "Spotlight на секретном томе выключен (подтверждено)."
@@ -1258,6 +1325,7 @@ if ! stage_done vol_hygiene; then
         dim "Time Machine: исключение перечитать не смог — не критично."
     fi
     stage_mark vol_hygiene
+    phase_end "Гигиена тома"
 fi
 
 # ------------------------------------------------------------
@@ -1336,6 +1404,7 @@ link_to() {
 # --- Фаза 6, основная -------------------------------------------------------
 if ! stage_done data; then
     step "ДАННЫЕ ПРИЛОЖЕНИЙ -> НА СЕКРЕТНЫЙ ДИСК" "6/6"
+    phase_begin
     info "Сканирую диск по содержимому (имена папок не важны)..."
     DATA=$(resolve_data_dir "$VOL_NAME")
     [ "$DATA" != "$VOL_NAME" ] && info "Корень данных на диске: ${DATA#$VOL_NAME/}"
@@ -1426,6 +1495,7 @@ if ! stage_done data; then
     done
     ding_subtle
     stage_mark data
+    phase_end "Данные приложений"
 fi
 
 # ------------------------------------------------------------
@@ -1542,6 +1612,7 @@ printf '\r\033[2K'
 killall Finder 2>/dev/null
 
 run_selfcheck
+phase_summary
 ding
 
 echo ""
