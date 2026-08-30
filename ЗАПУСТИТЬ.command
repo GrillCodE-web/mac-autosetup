@@ -542,6 +542,21 @@ if ! stage_done hardening; then
     if [ "$REC" = "0" ]; then ok "Недавние приложения в Dock скрыты (подтверждено)."
     else warn "Dock: перечитать не смог — проверь Настройки -> Рабочий стол и Dock."; fi
 
+    # Gatekeeper и SIP должны быть ВКЛЮЧЕНЫ — здесь только проверка (не трогаем)
+    if spctl --status 2>/dev/null | grep -qi "assessments enabled"; then
+        ok "Gatekeeper включен (подтверждено)."
+    else
+        warn "Gatekeeper ВЫКЛЮЧЕН — включи: sudo spctl --master-enable"
+    fi
+    if csrutil status 2>/dev/null | grep -qi "enabled"; then
+        ok "SIP (защита целостности системы) включен."
+    else
+        warn "SIP выключен — это плохо для защиты; включается только из Recovery."
+    fi
+
+    # Время точное (раз геолокацию выключили — часы держим по сети)
+    as_root sntp -sS time.apple.com 2>/dev/null && ok "Часы синхронизированы по сети (time.apple.com)."
+
     stage_mark hardening
 fi
 
@@ -590,9 +605,8 @@ if ! stage_done radio; then
     else
         warn "Часовой пояс по IP не определился — оставил как есть."
     fi
-    # Штатная авто-смена пояса в самой системе: ключ включаю — он сработает,
-    # если службы геолокации когда-нибудь будут включены (сейчас мы их гасим).
-    as_root defaults write /Library/Preferences/com.apple.timezone.auto Active -bool true 2>/dev/null
+    # Авто-смену пояса в системе НЕ включаем (по решению владельца: IP скачут
+    # по штатам/городам — фоновая смена сделает только хуже).
 
     # Bluetooth: на время настройки включаю (мышка/клава), в конце выключу
     BLUEUTIL=""
@@ -1102,6 +1116,24 @@ fi
 
 VOL_NAME=$(vc_mounted_vol)
 [ -z "$VOL_NAME" ] && { err "Секретный том не смонтирован — без него фаза данных невозможна."; exit 1; }
+
+# Гигиена секретного тома: не индексировать Spotlight (имена файлов не должны
+# попадать в системный индекс) и не бэкапить в Time Machine.
+if ! stage_done vol_hygiene; then
+    as_root mdutil -i off "$VOL_NAME" 2>/dev/null
+    if mdutil -s "$VOL_NAME" 2>/dev/null | grep -qi "disabled"; then
+        ok "Spotlight на секретном томе выключен (подтверждено)."
+    else
+        dim "Spotlight: статус перечитать не смог — не критично."
+    fi
+    as_root tmutil addexclusion -p "$VOL_NAME" 2>/dev/null
+    if tmutil isexcluded "$VOL_NAME" 2>/dev/null | grep -qi "\[Excluded\]"; then
+        ok "Том исключен из Time Machine (подтверждено)."
+    else
+        dim "Time Machine: исключение перечитать не смог — не критично."
+    fi
+    stage_mark vol_hygiene
+fi
 
 # ------------------------------------------------------------
 # ФАЗА 6: ДАННЫЕ ПРИЛОЖЕНИЙ НА СЕКРЕТНОМ ДИСКЕ
