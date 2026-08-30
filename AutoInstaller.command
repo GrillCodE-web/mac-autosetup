@@ -1391,6 +1391,16 @@ link_to() {
 }
 
 # --- Фаза 6, основная -------------------------------------------------------
+# Хватит ли места на секретном томе для копии: сравниваю du источника с df тома.
+# Не хватит — пропускаем перенос (данные остаются локально, симлинки не создаем).
+space_ok() { # space_ok <источник> <том>
+    local need_kb free_kb
+    need_kb=$(du -sk "$1" 2>/dev/null | awk '{print $1}')
+    free_kb=$(df -k "$2" 2>/dev/null | awk 'NR==2 {print $4}')
+    [ -n "$need_kb" ] && [ -n "$free_kb" ] || return 0
+    [ "$free_kb" -gt "$need_kb" ]
+}
+
 if ! stage_done data; then
     step "ДАННЫЕ ПРИЛОЖЕНИЙ -> НА СЕКРЕТНЫЙ ДИСК" "6/6"
     phase_begin
@@ -1436,6 +1446,10 @@ if ! stage_done data; then
 
         # Данные есть локально — переносим на диск сами
         if "fp_$key" "$src" 2>/dev/null || { [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ]; }; then
+            if ! space_ok "$src" "$VOL_NAME"; then
+                err "$lbl: на диске НЕ ХВАТИТ места (нужно $(du -sh "$src" 2>/dev/null | awk '{print $1}')) — данные оставил локально, освободи диск и запусти снова."
+                continue
+            fi
             info "$lbl: переношу локальные данные на диск..."
             mkdir -p "$(dirname "$dst")" 2>/dev/null
             if cp -R "$src" "$dst" 2>/dev/null && [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
@@ -1462,6 +1476,10 @@ if ! stage_done data; then
             fi
             pkill -f "$(basename "$APP_MATCH" .app)" 2>/dev/null; sleep 2
             if [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ]; then
+                if ! space_ok "$src" "$VOL_NAME"; then
+                    err "$lbl: на диске НЕ ХВАТИТ места — папку оставил локально, освободи диск и запусти снова."
+                    continue
+                fi
                 mkdir -p "$(dirname "$dst")" 2>/dev/null
                 cp -R "$src" "$dst" 2>/dev/null && rm -rf "$src" 2>/dev/null
                 ln -s "$dst" "$src" 2>/dev/null && ok "$lbl: папка создана приложением и подключена к диску." && continue

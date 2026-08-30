@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # ============================================================
-#  АУДИТ ЗАШИФРОВАННОГО ДИСКА И СИСТЕМЫ — v1
+#  PREINSTALL AUDIT — АУДИТ ДИСКА И СИСТЕМЫ — v2
 #  ТОЛЬКО ЧИТАЕТ. Ничего не меняет, ничего не удаляет,
 #  ничего не устанавливает. Пароли не спрашивает.
 #  Запуск: двойной клик. Диск должен быть вставлен;
 #  если не смонтирован — скрипт подождет, пока смонтируешь
 #  через VeraCrypt сам.
+#  Отпечатки папок совпадают с AutoInstaller.command v12.6+.
 #  В конце: выдели весь вывод (Cmd+A, Cmd+C) и скинь разработчику.
 # ============================================================
 
@@ -137,8 +138,12 @@ fp() {
     if [ -d "$d/tdata" ]; then echo "TELEGRAM? (tdata)"; return 0; fi
     if [ -d "$d/Local" ] && [ -d "$d/Packages" ]; then echo "SUBLIME (Local + Packages)"; return 0; fi
     if find "$d" -maxdepth 1 -name "*.tox" 2>/dev/null | grep -q .; then echo "QTOX (*.tox)"; return 0; fi
-    if [ -d "$d/Messages" ]; then echo "MAILMATE? (Messages)"; return 0; fi
+    if [ -d "$d/Messages" ]; then echo "MAILMATE (Messages)"; return 0; fi
+    # Tukan: контейнер macOS с bundle id me.tukan.tukan (как fp_tukan в AutoInstaller)
     if [ -e "$d/.com.apple.containermanagerd.metadata.plist" ]; then
+        if grep -qa "me.tukan.tukan" "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; then
+            echo "TUKAN (контейнер me.tukan.tukan)"; return 0
+        fi
         local bid
         bid=$(grep -a -o '[a-zA-Z0-9._-]*\.[a-zA-Z0-9._-]*\.[a-zA-Z0-9._-]*' "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null | head -1)
         echo "КОНТЕЙНЕР macOS (bundle: ${bid:-не прочитан})"; return 0
@@ -271,6 +276,20 @@ if pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
     ok "FUSE-T установлен."
 else
     warn "FUSE-T не найден через pkgutil."
+fi
+
+# ------------------------------------------------------------
+hdr "10) ГИГИЕНА ТОМА (Spotlight / Time Machine)"
+# ------------------------------------------------------------
+if mdutil -s "$VOL" 2>/dev/null | grep -qi "disabled"; then
+    ok "Индексация Spotlight на секретном томе ВЫКЛЮЧЕНА."
+else
+    warn "Spotlight на томе ВКЛЮЧЕН (имена файлов попадают в системный индекс) — прогони AutoInstaller или: sudo mdutil -i off \"$VOL\""
+fi
+if tmutil isexcluded "$VOL" 2>/dev/null | grep -qi "\[Excluded\]"; then
+    ok "Том исключен из Time Machine."
+else
+    warn "Том НЕ исключен из Time Machine — sudo tmutil addexclusion -p \"$VOL\""
 fi
 
 echo ""
