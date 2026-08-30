@@ -147,9 +147,16 @@ fp() {
     # Linken Sphere: корень Chromium user-data — файл Local State + профили
     # (Default или хеш-папки). Имя папки не важно: app.ls, App_LS2, Sphere...
     if [ -e "$d/Local State" ]; then
-        if [ -d "$d/Default" ] || find "$d" -maxdepth 1 -type d -name "????????????????????????????????????????????????????????????????????????" 2>/dev/null | grep -q .; then
-            echo "LINKEN SPHERE (Local State + профили)"; return 0
+        local s b re='^[0-9a-fA-F]{24,64}$' hit=1
+        [ -d "$d/Default" ] && hit=0
+        if [ $hit -ne 0 ]; then
+            for s in "$d"/*/; do
+                [ -d "$s" ] || continue
+                b=$(basename "$s")
+                [[ "$b" =~ $re ]] && { hit=0; break; }
+            done
         fi
+        [ $hit -eq 0 ] && { echo "LINKEN SPHERE (Local State + профили)"; return 0; }
     fi
     return 1
 }
