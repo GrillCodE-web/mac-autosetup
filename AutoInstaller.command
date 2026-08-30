@@ -21,7 +21,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v12.6-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices (все, не только .txt), Bluetooth без сторонних утилит, все расширения видны в Finder, dry-run, возобновление после падения, тайминг фаз, автообновление скрипта с GitHub, проверка версии macOS"
+readonly SCRIPT_VERSION="v12.8-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -423,15 +423,8 @@ case "$(printf '%s' "$EXTRA" | tr '[:lower:]' '[:upper:]')" in
 #    включая PC без Option/Cmd), Caps Lock не трогаем
 #  - данные приложений на диске подключаются всегда автоматом
 #  - часовой пояс: сам по IP; спрошу, только если не определится
-as_root defaults delete /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null
-SAVED_SS_IDLE=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null)
-defaults -currentHost write com.apple.screensaver idleTime -int 0 2>/dev/null
-ok "На время настройки: автовыход и заставка ВЫКЛЮЧЕНЫ — экран не погаснет и из системы не выкинет."
 
-# АвтоУСТАНОВКУ обновлений macOS гасим СРАЗУ и держим выключенной до конца
-as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false 2>/dev/null
-
-# --- DRY-RUN: печатаем план и выходим без единого изменения ------------------
+# --- DRY-RUN: печатаем план и выходим ДО любых изменений ---------------------
 if [ "$DRY_RUN" = "1" ]; then
     step "ПЛАН (DRY-RUN — ничего не меняю)"
     [ "$CREATE_USER" = "да" ] && echo "  + создать учетку «$NEW_USER» (обычная)" || echo "  - учетку не создавать"
@@ -455,9 +448,17 @@ if [ "$DRY_RUN" = "1" ]; then
     [ "$INSTALL_EXCEL" = "да" ] && echo "  + Excel — поставить"
     echo ""
     ok "Конец плана. Запусти без --dry-run для реального прогона."
-    rm -f "$CONFIG_FILE"
     exit 0
 fi
+
+# Ниже — ТОЛЬКО реальный прогон: гасим автовыход/заставку на время настройки
+as_root defaults delete /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null
+SAVED_SS_IDLE=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null)
+defaults -currentHost write com.apple.screensaver idleTime -int 0 2>/dev/null
+ok "На время настройки: автовыход и заставка ВЫКЛЮЧЕНЫ — экран не погаснет и из системы не выкинет."
+
+# АвтоУСТАНОВКУ обновлений macOS гасим СРАЗУ и держим выключенной до конца
+as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false 2>/dev/null
 
 # ------------------------------------------------------------
 # ФАЗА 1: ОТДЕЛЬНАЯ УЧЕТКА (каждый шаг dscl — с проверкой)
@@ -482,7 +483,9 @@ if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
             if ! as_root $c 2>/dev/null; then err "dscl: не выполнено «$c»"; OK_USER=0; break; fi
         done
         if [ "$OK_USER" = "1" ]; then
-            echo "$USER_PASS" | as_root dscl . -passwd "/Users/$NEW_USER" 2>/dev/null
+            # Пароль — аргументом: пайп сломался бы (его съел бы sudo -S), а dscl
+            # мог повиснуть на интерактивном запросе. В ps на миг виден — приемлемо.
+            as_root dscl . -passwd "/Users/$NEW_USER" "$USER_PASS" 2>/dev/null
             as_root createhomedir -c -u "$NEW_USER" 2>/dev/null
         fi
         if [ "$OK_USER" = "1" ] && id "$NEW_USER" &>/dev/null; then
@@ -496,6 +499,18 @@ if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
     phase_end "Учетная запись"
 fi
 
+# Маленький верификатор: записали ключ -> сразу перечитали
+verify_default() { # verify_default <описание> <plist> <ключ> <ожидание> [root]
+    local desc="$1" plist="$2" key="$3" want="$4" asroot="$5" got
+    if [ "$asroot" = "root" ]; then
+        got=$(as_root defaults read "$plist" "$key" 2>/dev/null)
+    else
+        got=$(defaults read "$plist" "$key" 2>/dev/null)
+    fi
+    if [ "$got" = "$want" ]; then ok "$desc (подтверждено)."
+    else warn "$desc — записано, но перечитать не смог (значение: ${got:-пусто}). Проверь глазами."; fi
+}
+
 # ------------------------------------------------------------
 # ФАЗА 2: БАЗОВАЯ ЗАЩИТА (каждый пункт — с перечитыванием)
 # ------------------------------------------------------------
@@ -503,9 +518,10 @@ if ! stage_done hardening; then
     step "БАЗОВАЯ ЗАЩИТА / BASELINE SECURITY" "2/6"
     phase_begin
 
-    # Пароль сразу после сна/заставки — ОДИН раз, с проверкой
+    # Пароль сразу после сна/заставки — ОДИН раз, с проверкой.
+    # ДВЕ строки в пайпе: первую съедает sudo -S, вторую читает sysadminctl -password -.
     SL_MANUAL=0
-    echo "$ADMIN_PASS" | sudo -S sysadminctl -screenLock immediate -password - 2>/dev/null
+    printf '%s\n%s\n' "$ADMIN_PASS" "$ADMIN_PASS" | sudo -S sysadminctl -screenLock immediate -password - 2>/dev/null
     sleep 1
     if sysadminctl -screenLock status 2>/dev/null | grep -qi immediate; then
         ok "Пароль после сна и заставки — сразу (подтверждено)."
@@ -675,17 +691,20 @@ fi
 if ! stage_done radio; then
     step "СЕТЬ И РАДИО / NETWORK & RADIO"
     phase_begin
+    # Реальное устройство Wi-Fi (не хардкод en0: на части маков это en1/en2)
+    WIFI_DEV=$(as_root networksetup -listallhardwareports 2>/dev/null \
+        | awk '/Hardware Port: (Wi-Fi|AirPort)/{getline; print $2; exit}')
     case "$WIFI_MODE" in
         1)
             WIFI_SVC=""
             ALL_SVCS=$(as_root networksetup -listallnetworkservices 2>/dev/null | tail -n +2)
             while IFS= read -r svc; do
                 DEV=$(as_root networksetup -listallhardwareports 2>/dev/null | grep -A 2 "Port: $svc" | grep "Device:" | awk '{print $2}')
-                if [ -n "$DEV" ] && networksetup -getairportpower "$DEV" >/dev/null 2>&1; then WIFI_SVC="$svc"; break; fi
+                if [ -n "$DEV" ] && networksetup -getairportpower "$DEV" >/dev/null 2>&1; then WIFI_SVC="$svc"; WIFI_DEV="$DEV"; break; fi
             done <<< "$ALL_SVCS"
             [ -z "$WIFI_SVC" ] && WIFI_SVC=$(printf '%s\n' "$ALL_SVCS" | grep -i "wi-fi\|wifi\|airport" | head -1)
             if [ -n "$WIFI_SVC" ]; then
-                as_root networksetup -setairportpower en0 off 2>/dev/null
+                [ -n "$WIFI_DEV" ] && as_root networksetup -setairportpower "$WIFI_DEV" off 2>/dev/null
                 as_root networksetup -removenetworkservice "$WIFI_SVC" 2>/dev/null
                 if ! as_root networksetup -listallnetworkservices 2>/dev/null | grep -qi "wi-fi\|wifi\|airport"; then
                     ok "Wi-Fi удален из системы (подтверждено)."
@@ -697,8 +716,12 @@ if ! stage_done radio; then
             fi
             ;;
         2)
-            as_root networksetup -setairportpower en0 off 2>/dev/null
-            ok "Wi-Fi выключен (радио). Включить обратно: Настройки -> Wi-Fi."
+            if [ -n "$WIFI_DEV" ]; then
+                as_root networksetup -setairportpower "$WIFI_DEV" off 2>/dev/null
+                ok "Wi-Fi выключен (радио, $WIFI_DEV). Включить обратно: Настройки -> Wi-Fi."
+            else
+                warn "Wi-Fi устройство не нашел — выключи радио руками: Настройки -> Wi-Fi."
+            fi
             ;;
         *) dim "Wi-Fi не трогаю." ;;
     esac
@@ -802,11 +825,11 @@ fi
 # ФАЗА 3: УСТАНОВКА ПРИЛОЖЕНИЙ (скачал -> поставил -> ПРОВЕРИЛ)
 # ------------------------------------------------------------
 net_ok()  { curl -s --max-time 5 https://github.com >/dev/null 2>&1; }
-net_speed() {
-    local kb
-    kb=$(curl -s --max-time 10 -o /dev/null -w '%{speed_download}' https://github.com 2>/dev/null | cut -d. -f1)
-    case "$kb" in ''|*[!0-9]*) kb=0 ;; esac
-    echo "$kb"
+net_speed() { # скорость в БАЙТАХ/с (так отдает curl speed_download)
+    local bps
+    bps=$(curl -s --max-time 10 -o /dev/null -w '%{speed_download}' https://github.com 2>/dev/null | cut -d. -f1)
+    case "$bps" in ''|*[!0-9]*) bps=0 ;; esac
+    echo "$bps"
 }
 net_wait() {
     if ! net_ok; then
@@ -816,10 +839,10 @@ net_wait() {
     fi
     local sp
     sp=$(net_speed)
-    if [ "$sp" -gt 0 ] && [ "$sp" -lt 100 ]; then
-        warn "Канал медленный (~$((sp / 8)) КБ/с) — загрузки будут долгими."
-    elif [ "$sp" -ge 100 ]; then
-        dim "Канал: ~$((sp / 1024)) МБ/с."
+    if [ "$sp" -gt 0 ] && [ "$sp" -lt 102400 ]; then
+        warn "Канал медленный (~$((sp / 1024)) КБ/с) — загрузки будут долгими."
+    elif [ "$sp" -ge 102400 ]; then
+        dim "Канал: ~$((sp / 1048576)) МБ/с."
     fi
 }
 
@@ -858,8 +881,15 @@ install_dmg() {
     net_wait
     for try in 1 2 3; do
         tmp="/tmp/$name.dmg"
-        curl -L "$url" -o "$tmp" --progress-bar 2>&1 && break
-        warn "$name: попытка $try не скачалась."
+        # -f: HTTP-ошибка (404 и т.п.) = ненулевой код, а не «успех» с html-страницей
+        if curl -fL "$url" -o "$tmp" --progress-bar 2>&1; then
+            local sz
+            sz=$(stat -f%z "$tmp" 2>/dev/null)
+            if [ -n "$sz" ] && [ "$sz" -gt 1048576 ]; then break; fi
+            warn "$name: попытка $try — скачалось что-то кривое ($((${sz:-0} / 1024)) КБ)."
+        else
+            warn "$name: попытка $try не скачалась."
+        fi
         if [ "$try" = "2" ] && [ "$name" = "Sphere" ]; then
             url="$SPHERE_URL_X86"; [ "$ARCH" = "arm64" ] && url="$SPHERE_URL_ARM64"
             warn "$name: пробую зеркало/другой URL."
@@ -889,16 +919,24 @@ install_dmg() {
 }
 
 install_pkg_url() {
-    local url="$1" name="$2"
+    local url="$1" name="$2" try sz
     net_wait
-    curl -sL "$url" -o "/tmp/$name.pkg" 2>/dev/null && as_root installer -pkg "/tmp/$name.pkg" -target / 2>/dev/null
+    for try in 1 2 3; do
+        curl -L "$url" -o "/tmp/$name.pkg" --progress-bar 2>&1
+        sz=$(stat -f%z "/tmp/$name.pkg" 2>/dev/null)
+        if [ -n "$sz" ] && [ "$sz" -gt 1048576 ]; then break; fi
+        warn "$name: попытка $try — пакет кривой или не скачался."
+        [ "$try" = "3" ] && { err "$name: не скачался после 3 попыток. Пропускаю."; rm -f "/tmp/$name.pkg"; return 1; }
+        sleep 3
+    done
+    as_root installer -pkg "/tmp/$name.pkg" -target / 2>/dev/null
     rm -f "/tmp/$name.pkg"
 }
 
 if ! stage_done apps; then
     step "УСТАНОВКА ПРИЛОЖЕНИЙ / INSTALLING APPS" "3/6"
     phase_begin
-    step_prog_init 7
+    step_prog_init 8
 
     if ! app_installed telegram; then
         info "Telegram — ставлю."
@@ -911,7 +949,7 @@ if ! stage_done apps; then
     if ! app_installed sublime; then
         info "Sublime Text — ставлю."
         net_wait
-        curl -sL "$SUBLIME_URL" -o /tmp/Sublime.zip 2>/dev/null && (cd /tmp && unzip -o -q Sublime.zip 2>/dev/null)
+        curl -fsSL "$SUBLIME_URL" -o /tmp/Sublime.zip 2>/dev/null && (cd /tmp && unzip -o -q Sublime.zip 2>/dev/null)
         if [ -d "/tmp/Sublime Text.app" ]; then
             safe_remove_app "Sublime Text.app"
             as_root cp -R "/tmp/Sublime Text.app" /Applications/ 2>/dev/null
@@ -936,7 +974,7 @@ if ! stage_done apps; then
     if [ "$INSTALL_MM" = "да" ] && ! app_installed mailmate; then
         info "MailMate — ставлю."
         net_wait
-        curl -sL "$MM_URL" -o /tmp/MailMate.tbz 2>/dev/null && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null)
+        curl -fsSL "$MM_URL" -o /tmp/MailMate.tbz 2>/dev/null && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null)
         if [ -d "/tmp/MailMate.app" ]; then
             safe_remove_app "MailMate.app"
             as_root cp -R "/tmp/MailMate.app" /Applications/ 2>/dev/null
@@ -1106,8 +1144,19 @@ if ! stage_done filevault; then
     else
         info "Включаю FileVault (шифрование всего диска)..."
         CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
-        FV_OUT=$(as_root fdesetup enable -user "${CONSOLE_USER:-$(id -un)}" 2>&1)
-        FV_OUT=""; unset FV_OUT
+        # -inputplist: пароль уходит через stdin вместе с plist — НЕ на экран,
+        # НЕ в файл, НЕ в список процессов. as_root тут НЕ подходит: внутри него
+        # свой пайп в sudo -S, и внешний stdin до команды не доедет.
+        # Одна строка в потоке — пароль sudo, остальное читает fdesetup.
+        FV_USER="${CONSOLE_USER:-$(id -un)}"
+        FV_PASS_ESC=$(printf '%s' "$ADMIN_PASS" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        FV_OUT=$( { printf '%s\n' "$ADMIN_PASS"; printf '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Username</key><string>%s</string>
+<key>Password</key><string>%s</string>
+</dict></plist>' "$FV_USER" "$FV_PASS_ESC"; } | sudo -S -k fdesetup enable -user "$FV_USER" -inputplist 2>&1)
+        FV_OUT=""; FV_PASS_ESC=""; unset FV_OUT FV_PASS_ESC
         sleep 2
         FV_ST=$(as_root fdesetup status 2>/dev/null)
         if printf '%s' "$FV_ST" | grep -qi "is On\|in progress"; then
@@ -1396,7 +1445,8 @@ link_to() {
 space_ok() { # space_ok <источник> <том>
     local need_kb free_kb
     need_kb=$(du -sk "$1" 2>/dev/null | awk '{print $1}')
-    free_kb=$(df -k "$2" 2>/dev/null | awk 'NR==2 {print $4}')
+    # -P: POSIX-вывод, одна строка на том (иначе длинное имя устройства ломает колонки)
+    free_kb=$(df -kP "$2" 2>/dev/null | awk 'NR==2 {print $4}')
     [ -n "$need_kb" ] && [ -n "$free_kb" ] || return 0
     [ "$free_kb" -gt "$need_kb" ]
 }
@@ -1464,8 +1514,11 @@ if ! stage_done data; then
         if app_installed "$key"; then
             info "$lbl: данных нет — запускаю приложение, чтобы создало свою папку..."
             APP_MATCH=$(find /Applications -maxdepth 1 -iname "$(app_bundle "$key").app" 2>/dev/null | head -1)
-            if [ "$ARCH" = "arm64" ] && ! lipo -archs "$APP_MATCH/Contents/MacOS/"* 2>/dev/null | grep -q arm64; then
-                as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
+            if [ "$ARCH" = "arm64" ]; then
+                APP_BIN=$(find "$APP_MATCH/Contents/MacOS" -type f 2>/dev/null | head -1)
+                if [ -n "$APP_BIN" ] && ! lipo -archs "$APP_BIN" 2>/dev/null | grep -q arm64; then
+                    as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
+                fi
             fi
             xattr -dr com.apple.quarantine "$APP_MATCH" 2>/dev/null
             open -a "$APP_MATCH" 2>/dev/null
@@ -1500,8 +1553,15 @@ if ! stage_done data; then
             ALL_OK=0; err "$lbl — НЕ подключен. Смотри сообщения выше."
         fi
     done
+    if [ "$ALL_OK" = "1" ]; then
+        ok "Итог фазы: все приложения подключены к диску."
+        stage_mark data
+    else
+        # Фазу НЕ отмечаем завершенной: при повторном запуске она пройдет еще раз
+        # (операции идемпотентны) и до линкует, что сегодня не получилось.
+        warn "Итог фазы: есть НЕподключенные приложения. Разберись (права Терминала / место на диске) и запусти скрипт еще раз — эта фаза повторится."
+    fi
     ding_subtle
-    stage_mark data
     phase_end "Данные приложений"
 fi
 
@@ -1554,7 +1614,10 @@ run_selfcheck() {
     local key src lbl tgt n bad=0 total=0 good=0
     local ROWS=""
     row() { # row <статус-символ> <цвет> <имя> <деталь>
-        ROWS="$ROWS$2  $1 $(printf '%-14s' "$3")${NC} ${GREY}$4${NC}\n"
+        # Паддинг по СИМВОЛАМ (${#} знает UTF-8), а не по байтам, как printf %-14s —
+        # иначе рамка «плывет» на кириллице («Брандмауэр», «Секретный том»).
+        local pad=$(( 14 - ${#3} )); [ $pad -lt 1 ] && pad=1
+        ROWS="$ROWS$2  $1 $3$(printf '%*s' $pad '')${NC} ${GREY}$4${NC}\n"
     }
     for key in $(app_keys); do
         [ "$key" = "mailmate" ] && [ "$INSTALL_MM" != "да" ] && ! app_installed mailmate && continue
@@ -1588,6 +1651,13 @@ run_selfcheck() {
     else row "✗" "$RED" "Брандмауэр" "НЕ включен"; bad=$((bad + 1)); fi
     if [ -d /Applications/VeraCrypt.app ] && pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then good=$((good + 1)); row "✓" "$GREEN" "VeraCrypt" "установлен + FUSE-T"
     else row "✗" "$RED" "VeraCrypt" "не найден / нет FUSE-T"; bad=$((bad + 1)); fi
+    # Инфо-строка (не в счет): сколько свободно на секретном томе
+    if [ -n "$VOL_NAME" ] && [ -d "$VOL_NAME" ]; then
+        local vfree vtotal
+        vfree=$(df -kP "$VOL_NAME" 2>/dev/null | awk 'NR==2 {printf "%.1f", $4/1048576}')
+        vtotal=$(df -kP "$VOL_NAME" 2>/dev/null | awk 'NR==2 {printf "%.0f", $2/1048576}')
+        row "•" "$CYAN" "Секретный том" "свободно ${vfree:-?} из ${vtotal:-?} ГБ"
+    fi
 
     local W=58
     echo ""
@@ -1641,5 +1711,8 @@ echo "    2) Вставь секретный диск -> VeraCrypt -> Mount -> �
 echo ""
 echo -e "  ${GREY}Завершаю через 5 сек...${NC}"
 sleep 5
-rm -f "$STAGE_FILE"
+# Отметки фаз стираю, только если все фазы отметились; иначе следующий запуск
+# продолжит с недоделанного места.
+if stage_done data; then rm -f "$STAGE_FILE"
+else warn "Есть недоделанные фазы — отметки прогресса оставил: следующий запуск продолжит с них."; fi
 exit 0
