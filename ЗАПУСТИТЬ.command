@@ -21,7 +21,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v12-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому (имена папок не важны), создание диска только через GUI VeraCrypt (пароль диска в скрипте отсутствует), FileVault без показа ключа, минимум вопросов, верификация каждого пункта защиты, dry-run, возобновление после падения"
+readonly SCRIPT_VERSION="v12.1-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, dry-run, возобновление после падения"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -52,12 +52,22 @@ info() { echo -e "  ${BLUE}${BOLD}•${NC}  $1"; }
 dim()  { echo -e "  ${GREY}· $1${NC}"; }
 sub()  { echo ""; echo -e "  ${BOLD}${CYAN}▸${NC} ${BOLD}$1${NC}"; }
 hr()   { echo -e "  ${GREY}$(rep "─" $(($(tw) - 4)))${NC}"; }
+progress_bar() {
+    local dn=$1 tt=$2 w=26 filled empty i
+    filled=$(( dn * w / tt )); empty=$(( w - filled ))
+    printf '  \033[0;36m'
+    i=0; while [ $i -lt $filled ]; do printf '█'; i=$((i + 1)); done
+    printf '\033[0;90m'
+    i=0; while [ $i -lt $empty ]; do printf '░'; i=$((i + 1)); done
+    printf '\033[0m  %s/%s\n' "$dn" "$tt"
+}
 step() {
     local w
     w=$(tw)
     echo ""
     echo -e "  ${GREY}─── $(t2s $SECONDS) $(rep "─" $((w - 10)))${NC}"
     echo -e "  ${CYAN}${BOLD}▎${NC} ${BOLD}$1${NC}"
+    case "$2" in */*) progress_bar "${2%/*}" "${2#*/}" ;; esac
     echo -e "  ${GREY}$(rep "─" $w)${NC}"
 }
 q()     { echo -e "  ${CYAN}${BOLD}[$1]${NC} ${BOLD}$2${NC}"; }
@@ -125,9 +135,21 @@ caffeinate -dimsu &
 CAFFEINATE_PID=$!
 cleanup_exit() {
     kill "$CAFFEINATE_PID" 2>/dev/null
-    rm -f "$CONFIG_FILE"
+    rm -f "$CONFIG_FILE" "$LOCK"
 }
 trap cleanup_exit EXIT
+
+# Защита от двойного запуска: второй экземпляр не стартует, пока жив первый
+LOCK=/tmp/autosetup.lock
+if [ -f "$LOCK" ]; then
+    OLD_PID=$(cat "$LOCK" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        err "Скрипт УЖЕ запущен (PID $OLD_PID). Дождись окончания или закрой то окно."
+        exit 1
+    fi
+    rm -f "$LOCK"
+fi
+echo $$ > "$LOCK" 2>/dev/null
 
 ARCH=$(uname -m)
 clear
@@ -135,8 +157,8 @@ clear
 TITLE_W=$(tw)
 echo ""
 echo -e "  ${CYAN}$(rep "━" "$TITLE_W")${NC}"
-echo -e "  ${CYAN}▎${NC}${BOLD}  АВТОНАСТРОЙКА И ЗАЩИТА MAC${NC}"
-echo -e "  ${CYAN}▎${NC}  ${GREY}MAC SETUP & HARDENING${NC}"
+echo -e "  ${CYAN}▎${NC}  ${BOLD}\033[38;5;51mАВТОНАСТРОЙКА И ЗАЩИТА MAC${NC}  ${GREY}${SCRIPT_VERSION%% — *}${NC}"
+echo -e "  ${CYAN}▎${NC}  ${GREY}MAC SETUP & HARDENING — автомат, минимум вопросов, без следов${NC}"
 echo -e "  ${CYAN}$(rep "━" "$TITLE_W")${NC}"
 echo -e "  ${GREY}macOS $(sw_vers -productVersion 2>/dev/null) · $(sysctl -n hw.model 2>/dev/null) · $ARCH · $(date '+%d.%m.%Y %H:%M')${NC}"
 echo ""
@@ -357,6 +379,7 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "  + FileVault — включить и ПРОВЕРИТЬ (ключ восстановления не показывается и не сохраняется)"
     echo "  + диск: $( [ "$HAVE_DISK" = "да" ] && echo 'подключить существующий (монтируешь сам в VeraCrypt)' || echo 'НОВЫЙ: шифруешь сам в окне VeraCrypt, я жду и нахожу')"
     echo "  + часовой пояс — по IP (тихо), раскладки US+Русская, Ctrl+Space, Wi-Fi режим $WIFI_MODE"
+    echo "  + в конце — встроенная самопроверка (ссылки, FileVault, брандмауэр, VeraCrypt)"
     [ "$INSTALL_EXCEL" = "да" ] && echo "  + Excel — поставить"
     echo ""
     ok "Конец плана. Запусти без --dry-run для реального прогона."
@@ -368,7 +391,7 @@ fi
 # ФАЗА 1: ОТДЕЛЬНАЯ УЧЕТКА (каждый шаг dscl — с проверкой)
 # ------------------------------------------------------------
 if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
-    step "ФАЗА 1 из 6: УЧЕТНАЯ ЗАПИСЬ / USER ACCOUNT"
+    step "УЧЕТНАЯ ЗАПИСЬ / USER ACCOUNT" "1/6"
     if id "$NEW_USER" &>/dev/null; then
         warn "Учетка «$NEW_USER» уже существует — пропускаю."
     else
@@ -399,19 +422,6 @@ if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
     stage_mark user
 fi
 
-state_tz() {
-    case "$(echo "$1" | tr '[:lower:]' '[:upper:]')" in
-        MSK|MOSCOW) echo "Europe/Moscow" ;;
-        SPB) echo "Europe/Moscow" ;;
-        EKB) echo "Asia/Yekaterinburg" ;;
-        KRD) echo "Europe/Moscow" ;;
-        KZN) echo "Europe/Moscow" ;;
-        NSK) echo "Asia/Novosibirsk" ;;
-        SAM) echo "Europe/Samara" ;;
-        *) echo "" ;;
-    esac
-}
-
 # Маленький верификатор: написали ключ -> сразу перечитали
 verify_default() { # verify_default <описание> <plist> <ключ> <ожидание> [root]
     local desc="$1" plist="$2" key="$3" want="$4" asroot="$5" got
@@ -428,7 +438,7 @@ verify_default() { # verify_default <описание> <plist> <ключ> <ож�
 # ФАЗА 2: БАЗОВАЯ ЗАЩИТА (каждый пункт — с перечитыванием)
 # ------------------------------------------------------------
 if ! stage_done hardening; then
-    step "ФАЗА 2 из 6: БАЗОВАЯ ЗАЩИТА / BASELINE SECURITY"
+    step "БАЗОВАЯ ЗАЩИТА / BASELINE SECURITY" "2/6"
 
     # Пароль сразу после сна/заставки — ОДИН раз, с проверкой
     SL_MANUAL=0
@@ -524,6 +534,14 @@ if ! stage_done hardening; then
     if [ "$SIRI" = "0" ]; then ok "Siri выключена (подтверждено)."
     else warn "Siri — перечитать не смог. Проверь: Настройки -> Apple Intelligence и Siri."; fi
 
+    # Не светить недавние приложения в Dock (перезапускается ТОЛЬКО Dock)
+    defaults write com.apple.dock show-recents -bool false 2>/dev/null
+    killall Dock 2>/dev/null
+    sleep 1
+    REC=$(defaults read com.apple.dock show-recents 2>/dev/null)
+    if [ "$REC" = "0" ]; then ok "Недавние приложения в Dock скрыты (подтверждено)."
+    else warn "Dock: перечитать не смог — проверь Настройки -> Рабочий стол и Dock."; fi
+
     stage_mark hardening
 fi
 
@@ -560,27 +578,21 @@ if ! stage_done radio; then
         *) dim "Wi-Fi не трогаю." ;;
     esac
 
-    # Часовой пояс — сам по IP; спрашиваю только если не определился
-    info "Определяю часовой пояс сам (по IP)..."
-    TZ_ZONE=""
-    CC=$(curl -s --max-time 8 https://ipapi.co/json 2>/dev/null | grep '"country_code"' | cut -d'"' -f4)
-    if [ "$CC" = "RU" ] || [ "$CC" = "BY" ] || [ "$CC" = "KZ" ]; then
-        TZ_ZONE=$(curl -s --max-time 8 https://ipapi.co/timezone 2>/dev/null)
-        case "$TZ_ZONE" in Europe/*|Asia/*) ;; *) TZ_ZONE="" ;; esac
-    fi
-    if [ -z "$TZ_ZONE" ]; then
-        echo "   Не определился. Код: MSK СПБ ЕКБ КРД КЗН НСК САМ (Enter — оставить как есть)"
-        read -r -p "   Код города: " TZ_IN
-        TZ_ZONE=$(state_tz "$TZ_IN")
-    fi
+    # Часовой пояс — молча по IP. Не определился — не трогаю, без вопросов.
+    info "Определяю часовой пояс по IP..."
+    TZ_ZONE=$(curl -s --max-time 8 https://ipapi.co/timezone 2>/dev/null)
+    case "$TZ_ZONE" in Europe/*|Asia/*|Africa/*|America/*|Australia/*|Pacific/*) ;; *) TZ_ZONE="" ;; esac
     if [ -n "$TZ_ZONE" ]; then
         as_root systemsetup -settimezone "$TZ_ZONE" 2>/dev/null
         readlink /etc/localtime 2>/dev/null | grep -q "$TZ_ZONE" \
             && ok "Часовой пояс: $TZ_ZONE (подтверждено)." \
             || warn "Часовой пояс: не подтвердился — проверь в Настройках -> Основные -> Дата и время."
     else
-        dim "Часовой пояс не трогал."
+        warn "Часовой пояс по IP не определился — оставил как есть."
     fi
+    # Штатная авто-смена пояса в самой системе: ключ включаю — он сработает,
+    # если службы геолокации когда-нибудь будут включены (сейчас мы их гасим).
+    as_root defaults write /Library/Preferences/com.apple.timezone.auto Active -bool true 2>/dev/null
 
     # Bluetooth: на время настройки включаю (мышка/клава), в конце выключу
     BLUEUTIL=""
@@ -754,7 +766,7 @@ install_pkg_url() {
 }
 
 if ! stage_done apps; then
-    step "ФАЗА 3 из 6: УСТАНОВКА ПРИЛОЖЕНИЙ / INSTALLING APPS"
+    step "УСТАНОВКА ПРИЛОЖЕНИЙ / INSTALLING APPS" "3/6"
 
     if ! app_installed telegram; then
         info "Telegram — ставлю."
@@ -897,7 +909,7 @@ fi
 # Ключ восстановления НЕ показывается на экране и НИГДЕ не сохраняется.
 # ------------------------------------------------------------
 if ! stage_done filevault; then
-    step "ФАЗА 4 из 6: FILEVAULT"
+    step "FILEVAULT — ШИФРОВАНИЕ ДИСКА" "4/6"
     FV_ST=$(as_root fdesetup status 2>/dev/null)
     if printf '%s' "$FV_ST" | grep -qi "is On"; then
         ok "FileVault уже включен (подтверждено)."
@@ -1008,7 +1020,7 @@ wait_vc_mount() {
 }
 
 if ! stage_done disk; then
-    step "ФАЗА 5 из 6: СЕКРЕТНЫЙ ДИСК / ENCRYPTED DISK"
+    step "СЕКРЕТНЫЙ ДИСК / ENCRYPTED DISK" "5/6"
     if ! net_ok; then err "Нет интернета — без него приложения не скачать. Подключи сеть и запусти заново."; exit 1; fi
 
     DISK_DEV=""
@@ -1166,7 +1178,7 @@ link_to() {
 
 # --- Фаза 6, основная -------------------------------------------------------
 if ! stage_done data; then
-    step "ФАЗА 6 из 6: ДАННЫЕ ПРИЛОЖЕНИЙ -> НА СЕКРЕТНЫЙ ДИСК"
+    step "ДАННЫЕ ПРИЛОЖЕНИЙ -> НА СЕКРЕТНЫЙ ДИСК" "6/6"
     info "Сканирую диск по содержимому (имена папок не важны)..."
     DATA=$(resolve_data_dir "$VOL_NAME")
     [ "$DATA" != "$VOL_NAME" ] && info "Корень данных на диске: ${DATA#$VOL_NAME/}"
@@ -1292,30 +1304,80 @@ defaults delete com.apple.finder GoToField 2>/dev/null
 defaults delete com.apple.finder GoToFieldHistory 2>/dev/null
 as_root killall -HUP sharedfilelistd 2>/dev/null
 killall cfprefsd 2>/dev/null
-as_root killall Finder 2>/dev/null
 ok "Следы настройки стерты: загрузки, история терминала, «Недавние» в Finder, старые меню."
 
 # Обнуляем секреты в памяти — пароль админа больше не нужен
 ADMIN_PASS=""; unset ADMIN_PASS USER_PASS USER_PASS2
 
 # ------------------------------------------------------------
+# САМОПРОВЕРКА (встроенная — отдельный файл не нужен):
+# ссылки живые + цели непустые + содержимое похоже на данные приложения,
+# FileVault, брандмауэр, VeraCrypt/FUSE-T
+# ------------------------------------------------------------
+run_selfcheck() {
+    step "САМОПРОВЕРКА / SELF-CHECK"
+    local key src lbl tgt n bad=0 total=0 good=0
+    for key in $(app_keys); do
+        [ "$key" = "mailmate" ] && [ "$INSTALL_MM" != "да" ] && ! app_installed mailmate && continue
+        [ "$key" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && ! app_installed qtox && continue
+        total=$((total + 1))
+        src=$(app_src "$key"); lbl=$(app_label "$key")
+        if [ -L "$src" ]; then
+            tgt=$(readlink "$src")
+            if [ -d "$tgt" ]; then
+                n=$(ls -A "$tgt" 2>/dev/null | wc -l | tr -d ' ')
+                if "fp_$key" "$tgt" 2>/dev/null; then
+                    good=$((good + 1)); ok "$lbl — на диске, данные опознаны ($n объектов)."
+                elif [ "$n" -gt 0 ]; then
+                    good=$((good + 1)); ok "$lbl — на диске ($n объектов, папка нестандартная, но не пустая)."
+                else
+                    warn "$lbl — ссылка есть, папка на диске ПУСТАЯ (заполнится после первого запуска)."
+                fi
+            else
+                err "$lbl — ссылка БИТАЯ (цель недоступна). Диск смонтирован?"
+                bad=$((bad + 1))
+            fi
+        else
+            err "$lbl — НЕ ссылка (данные локальные или папки нет)."
+            bad=$((bad + 1))
+        fi
+    done
+    total=$((total + 3))
+    if fdesetup status 2>/dev/null | grep -qi "is On"; then good=$((good + 1)); ok "FileVault включен."
+    else err "FileVault НЕ включен."; bad=$((bad + 1)); fi
+    if [ "$(defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null)" = "1" ]; then good=$((good + 1)); ok "Брандмауэр включен."
+    else err "Брандмауэр НЕ включен."; bad=$((bad + 1)); fi
+    if [ -d /Applications/VeraCrypt.app ] && pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then good=$((good + 1)); ok "VeraCrypt + FUSE-T на месте."
+    else err "VeraCrypt/FUSE-T не найдены."; bad=$((bad + 1)); fi
+    echo ""
+    if [ "$bad" = "0" ]; then
+        echo -e "  ${GREEN}${BOLD}✓ САМОПРОВЕРКА: $good/$total — всё зелёное.${NC}"
+    else
+        echo -e "  ${YELLOW}${BOLD}▲ САМОПРОВЕРКА: $good/$total зелёные, $bad — смотри выше.${NC}"
+    fi
+}
+
+# ------------------------------------------------------------
 # ФИНАЛ
 # ------------------------------------------------------------
-for t in 5 4 3 2 1; do printf '\r\033[2K  %s Закрываю настройки через %d...' "$([ $t -gt 1 ] && echo '⏳' || echo '⏳')" "$t"; sleep 1; done
+for t in 5 4 3 2 1; do printf '\r\033[2K  ⏳ Закрываю настройки через %d...' "$t"; sleep 1; done
 printf '\r\033[2K'
 osascript -e 'tell application "System Settings" to quit' >/dev/null 2>&1
 for t in 5 4 3 2 1; do printf '\r\033[2K  ⏳ Перезапускаю Finder через %d...' "$t"; sleep 1; done
 printf '\r\033[2K'
 killall Finder 2>/dev/null
 
+run_selfcheck
+
 echo ""
 echo -e "  ${GREEN}$(rep "━" "$(tw)")${NC}"
-echo -e "  ${GREEN}▎${NC}  ${BOLD}ВСЕ! Mac НАСТРОЕН И ЗАЩИЩЕН.${NC}"
+echo -e "  ${GREEN}▎${NC}  ${BOLD}\033[38;5;82mВСЕ! Mac НАСТРОЕН И ЗАЩИЩЕН.${NC}"
 echo -e "  ${GREEN}$(rep "━" "$(tw)")${NC}"
 echo ""
 echo -e "  ${BOLD}Что сделано:${NC}"
 echo "    • защита: блокировка сразу, брандмауэр+невидимость, SSH/экран/ARD выкл"
 echo "    • AirDrop/Handoff/геолокация/аналитика/Siri — выкл (каждый пункт проверен)"
+echo "    • недавние приложения в Dock скрыты"
 echo "    • FileVault: шифрование включено (ключ скриптом не показывался и не сохранялся)"
 echo "    • данные приложений — на секретном диске, система смотрит на них через ссылки"
 echo "    • раскладки ABC+Русская (Ctrl+Space), часовой пояс по IP, Wi-Fi по выбору"
@@ -1323,7 +1385,6 @@ echo ""
 echo -e "  ${YELLOW}${BOLD}ПРОВЕРЬ В КОНЦЕ:${NC}"
 echo "    1) Флажок раскладки в строке меню сверху (если нет — нажми Ctrl+Space)"
 echo "    2) Вставь секретный диск -> VeraCrypt -> Mount -> запусти Telegram/Sphere"
-echo "    3) Запусти ПРОВЕРИТЬ.command — покажет, что все ссылки живые"
 echo ""
 echo -e "  ${GREY}Завершаю через 5 сек...${NC}"
 sleep 5
