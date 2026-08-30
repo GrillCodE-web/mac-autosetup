@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # ============================================================
 #  АВТОНАСТРОЙКА MAC — ПОЛНЫЙ АВТОМАТ (v12)
@@ -224,13 +224,13 @@ esac
 SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 REPO_RAW="https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main"
 SELF_VER_SHORT="${SCRIPT_VERSION%%-*}"          # например v12.5
-REMOTE_VER=$(curl -s --max-time 5 "$REPO_RAW/AutoInstaller.command" 2>/dev/null \
+REMOTE_VER=$(curl -s --max-time 5 "$REPO_RAW/MacForge.command" 2>/dev/null \
     | grep -m1 'readonly SCRIPT_VERSION=' | sed 's/.*readonly SCRIPT_VERSION="\(v[0-9.]*\).*/\1/')
 if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$SELF_VER_SHORT" ]; then
     warn "На GitHub есть новая версия скрипта: $REMOTE_VER (у тебя $SELF_VER_SHORT)."
     read -r -p "   Скачать и перезапуститься на новой? (да/нет) [нет]: " DO_UPD
     if [ "$(yn "${DO_UPD:-нет}")" = "да" ]; then
-        if curl -s --max-time 30 -L "$REPO_RAW/AutoInstaller.command" -o "$SELF_PATH.new" 2>/dev/null \
+        if curl -s --max-time 30 -L "$REPO_RAW/MacForge.command" -o "$SELF_PATH.new" 2>/dev/null \
             && grep -q 'readonly SCRIPT_VERSION=' "$SELF_PATH.new"; then
             chmod +x "$SELF_PATH.new"; mv "$SELF_PATH.new" "$SELF_PATH"
             ok "Обновился до $REMOTE_VER. Перезапускаю..."

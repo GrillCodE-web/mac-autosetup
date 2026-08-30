@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # ============================================================
 #  PREINSTALL AUDIT — АУДИТ ДИСКА И СИСТЕМЫ — v3
@@ -9,7 +9,7 @@
 #  Запуск: двойной клик. Диск должен быть вставлен;
 #  если не смонтирован — скрипт подождет, пока смонтируешь
 #  через VeraCrypt сам.
-#  Отпечатки папок совпадают с AutoInstaller.command v12.6+.
+#  Отпечатки папок совпадают с MacForge.command v12.6+.
 #  В конце: выдели весь вывод (Cmd+A, Cmd+C) и скинь разработчику.
 # ============================================================
 
@@ -310,7 +310,7 @@ hdr "10) ГИГИЕНА ТОМА (Spotlight / Time Machine)"
 if mdutil -s "$VOL" 2>/dev/null | grep -qi "disabled"; then
     ok "Индексация Spotlight на секретном томе ВЫКЛЮЧЕНА."
 else
-    warn "Spotlight на томе ВКЛЮЧЕН (имена файлов попадают в системный индекс) — прогони AutoInstaller или: sudo mdutil -i off \"$VOL\""
+    warn "Spotlight на томе ВКЛЮЧЕН (имена файлов попадают в системный индекс) — прогони MacForge или: sudo mdutil -i off \"$VOL\""
 fi
 if tmutil isexcluded "$VOL" 2>/dev/null | grep -qi "\[Excluded\]"; then
     ok "Том исключен из Time Machine."
