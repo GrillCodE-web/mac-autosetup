@@ -252,17 +252,19 @@ hdr "6) СИСТЕМНАЯ СТОРОНА: куда смотрят прилож�
 # ------------------------------------------------------------
 show_target() {
     local label="$1" p="$2"
+    # Паддинг по символам (${#} знает UTF-8), не по байтам — иначе кириллица съезжает
+    local pad=$(( 14 - ${#label} )); [ $pad -lt 1 ] && pad=1
     if [ -L "$p" ]; then
         local tgt state
         tgt=$(readlink "$p")
         if [ -d "$tgt" ] && [ -n "$(ls -A "$tgt" 2>/dev/null)" ]; then state="цель ЖИВАЯ ($(ls -A "$tgt" 2>/dev/null | wc -l | tr -d ' ') объектов)"
         elif [ -d "$tgt" ]; then state="цель ПУСТАЯ — мёртвая ссылка!"
         else state="цель НЕ СУЩЕСТВУЕТ — мёртвая ссылка!"; fi
-        line "$(printf '%-14s' "$label") СИМЛИНК -> $tgt  [$state]"
+        echo -e "  ${label}$(printf '%*s' $pad '') ${GREEN}СИМЛИНК${NC} -> $tgt  [$state]"
     elif [ -d "$p" ]; then
-        line "$(printf '%-14s' "$label") ОБЫЧНАЯ ПАПКА в системе ($(ls -A "$p" 2>/dev/null | wc -l | tr -d ' ') объектов) — НЕ на диске!"
+        echo -e "  ${label}$(printf '%*s' $pad '') ${YELLOW}ОБЫЧНАЯ ПАПКА в системе ($(ls -A "$p" 2>/dev/null | wc -l | tr -d ' ') объектов) — НЕ на диске!${NC}"
     else
-        line "$(printf '%-14s' "$label") нет (ни папки, ни симлинка)"
+        echo -e "  ${label}$(printf '%*s' $pad '') ${GREY}нет (ни папки, ни симлинка)${NC}"
     fi
 }
 
