@@ -26,7 +26,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v12.8-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
+readonly SCRIPT_VERSION="v12.9-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -872,7 +872,9 @@ fi
 net_ok()  { curl -s --max-time 5 https://github.com >/dev/null 2>&1; }
 net_speed() { # скорость в БАЙТАХ/с (так отдает curl speed_download)
     local bps
-    bps=$(curl -s --max-time 10 -o /dev/null -w '%{speed_download}' https://github.com 2>/dev/null | cut -d. -f1)
+    # LC_ALL=C: в локали с десятичной запятой curl отдает "1234,5", и отсечение
+    # по точке возвращало нечисловое значение -> скорость всегда 0.
+    bps=$(LC_ALL=C curl -s --max-time 10 -o /dev/null -w '%{speed_download}' https://github.com 2>/dev/null | cut -d'.' -f1 | cut -d',' -f1)
     case "$bps" in ''|*[!0-9]*) bps=0 ;; esac
     echo "$bps"
 }
@@ -1226,6 +1228,13 @@ if ! stage_done filevault; then
 <key>Username</key><string>%s</string>
 <key>Password</key><string>%s</string>
 </dict></plist>' "$FV_USER" "$FV_PASS_ESC"; } | sudo -S -k fdesetup enable -user "$FV_USER" -inputplist 2>&1)
+        # Пароль из памяти убираем сразу, но причину отказа сохраняем: раньше
+        # FV_OUT затирался целиком и диагностировать неудачу было нечем.
+        # Ключ восстановления — 6 групп по 4 символа: строки с ним отбрасываем,
+        # как и все, что похоже на пароль пользователя.
+        FV_ERR=$(printf '%s' "$FV_OUT" \
+            | grep -vi "recovery key\|[A-Z0-9]\{4\}-[A-Z0-9]\{4\}-[A-Z0-9]\{4\}" \
+            | grep -v "^Password:" | grep . | head -2)
         FV_OUT=""; FV_PASS_ESC=""; unset FV_OUT FV_PASS_ESC
         sleep 2
         FV_ST=$(fdesetup status 2>/dev/null)
@@ -1235,8 +1244,10 @@ if ! stage_done filevault; then
             FV_STAGE_OK=1
         else
             err "FileVault не подтвердился: $(printf '%s' "$FV_ST" | head -1)."
+            [ -n "$FV_ERR" ] && err "Причина: $FV_ERR"
             warn "Включи руками: Настройки -> Конфиденциальность и безопасность -> FileVault."
         fi
+        FV_ERR=""; unset FV_ERR
     fi
     # Отмечаем фазу только при подтвержденном FileVault: иначе следующий
     # запуск пропустил бы незашифрованный диск.
@@ -1616,7 +1627,7 @@ if ! stage_done data; then
         if [ "$key" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && ! app_installed qtox && ! fp_qtox "$src" 2>/dev/null; then continue; fi
         case " $LINKED_KEYS " in *" $key "*) continue ;; esac
         if [ -L "$src" ]; then
-            if [ -e "$src" ] || [ -L "$src" -a -d "$(readlink "$src")" ]; then ok "$lbl — уже подключен."; continue; fi
+            if [ -e "$src" ] || { [ -L "$src" ] && [ -d "$(readlink "$src")" ]; }; then ok "$lbl — уже подключен."; continue; fi
             rm -f "$src" 2>/dev/null
         fi
 
