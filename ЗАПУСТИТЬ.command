@@ -70,7 +70,26 @@ step() {
     case "$2" in */*) progress_bar "${2%/*}" "${2#*/}" ;; esac
     echo -e "  ${GREY}$(rep "─" $w)${NC}"
 }
+# Живой прогресс внутри фазы: перерисовывает одну строку
+STEP_DONE=0; STEP_TOTAL=0
+step_prog_init() { STEP_TOTAL=$1; STEP_DONE=0; }
+step_prog() {
+    [ "$STEP_TOTAL" -gt 0 ] || return 0
+    STEP_DONE=$((STEP_DONE + 1))
+    [ $STEP_DONE -gt $STEP_TOTAL ] && STEP_DONE=$STEP_TOTAL
+    local w=22 filled i
+    filled=$(( STEP_DONE * w / STEP_TOTAL ))
+    printf '\r\033[2K    \033[0;36m' >&2
+    i=0; while [ $i -lt $filled ]; do printf '█' >&2; i=$((i + 1)); done
+    printf '\033[0;90m' >&2
+    i=0; while [ $i -lt $((w - filled)) ]; do printf '░' >&2; i=$((i + 1)); done
+    printf '\033[0m %s/%s %s' "$STEP_DONE" "$STEP_TOTAL" "${1:-}" >&2
+    [ $STEP_DONE -eq $STEP_TOTAL ] && printf '\n' >&2
+}
 q()     { echo -e "  ${CYAN}${BOLD}[$1]${NC} ${BOLD}$2${NC}"; }
+# Короткий звук без блокировки (не мешает прогону)
+ding() { afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 & }
+ding_subtle() { afplay /System/Library/Sounds/Pop.aiff >/dev/null 2>&1 & }
 pause() { echo ""; echo -e "  ${YELLOW}${BOLD}⏎${NC}  ${BOLD}$(L 'Когда сделаешь — нажми Enter' 'When done — press Enter')${NC}"; read -r; }
 
 # Двуязычный вывод и нормализация да/нет
@@ -601,6 +620,7 @@ if ! stage_done hardening; then
     if [ "$HDD" = "0" ]; then ok "Иконки внешних дисков на Рабочем столе скрыты (применится после рестарта Finder)."
     else warn "Рабочий стол: перечитать не смог."; fi
 
+    ding_subtle
     stage_mark hardening
 fi
 
@@ -733,11 +753,24 @@ fi
 # ФАЗА 3: УСТАНОВКА ПРИЛОЖЕНИЙ (скачал -> поставил -> ПРОВЕРИЛ)
 # ------------------------------------------------------------
 net_ok()  { curl -s --max-time 5 https://github.com >/dev/null 2>&1; }
+net_speed() {
+    local kb
+    kb=$(curl -s --max-time 10 -o /dev/null -w '%{speed_download}' https://github.com 2>/dev/null | cut -d. -f1)
+    case "$kb" in ''|*[!0-9]*) kb=0 ;; esac
+    echo "$kb"
+}
 net_wait() {
     if ! net_ok; then
         warn "$(L 'Нет интернета. Жду, пока появится' 'No internet. Waiting')..."
         while ! net_ok; do sleep 3; done
         ok "$(L 'Интернет есть, продолжаю.' 'Internet is back, continuing.')"
+    fi
+    local sp
+    sp=$(net_speed)
+    if [ "$sp" -gt 0 ] && [ "$sp" -lt 100 ]; then
+        warn "Канал медленный (~$((sp / 8)) КБ/с) — загрузки будут долгими."
+    elif [ "$sp" -ge 100 ]; then
+        dim "Канал: ~$((sp / 1024)) МБ/с."
     fi
 }
 
@@ -772,12 +805,19 @@ safe_remove_app() {
 }
 
 install_dmg() {
-    local url="$1" name="$2"
+    local url="$1" name="$2" try tmp
     net_wait
-    local tmp="/tmp/$name.dmg"
-    if ! curl -L "$url" -o "$tmp" --progress-bar 2>&1; then
-        err "$name: не скачалось. Пропускаю (интернет/URL?)."; return 1
-    fi
+    for try in 1 2 3; do
+        tmp="/tmp/$name.dmg"
+        curl -L "$url" -o "$tmp" --progress-bar 2>&1 && break
+        warn "$name: попытка $try не скачалась."
+        if [ "$try" = "2" ] && [ "$name" = "Sphere" ]; then
+            url="$SPHERE_URL_X86"; [ "$ARCH" = "arm64" ] && url="$SPHERE_URL_ARM64"
+            warn "$name: пробую зеркало/другой URL."
+        fi
+        [ "$try" = "3" ] && { err "$name: не скачалось после 3 попыток. Пропускаю."; return 1; }
+        sleep 3
+    done
     local mp
     mp=$(hdiutil attach "$tmp" -nobrowse -quiet 2>/dev/null | grep -o '/Volumes/.*' | head -1)
     if [ -z "$mp" ]; then err "$name: dmg не смонтировался."; rm -f "$tmp"; return 1; fi
@@ -808,6 +848,7 @@ install_pkg_url() {
 
 if ! stage_done apps; then
     step "УСТАНОВКА ПРИЛОЖЕНИЙ / INSTALLING APPS" "3/6"
+    step_prog_init 7
 
     if ! app_installed telegram; then
         info "Telegram — ставлю."
@@ -815,6 +856,7 @@ if ! stage_done apps; then
     else
         ok "Telegram уже стоит."
     fi
+    step_prog "Telegram"
 
     if ! app_installed sublime; then
         info "Sublime Text — ставлю."
@@ -830,6 +872,7 @@ if ! stage_done apps; then
     else
         ok "Sublime Text уже стоит."
     fi
+    step_prog "Sublime Text"
 
     if ! app_installed sphere; then
         info "Linken Sphere — ставлю."
@@ -838,6 +881,7 @@ if ! stage_done apps; then
     else
         ok "Linken Sphere уже стоит."
     fi
+    step_prog "Linken Sphere"
 
     if [ "$INSTALL_MM" = "да" ] && ! app_installed mailmate; then
         info "MailMate — ставлю."
@@ -851,6 +895,7 @@ if ! stage_done apps; then
         rm -rf /tmp/MailMate.app /tmp/MailMate.tbz 2>/dev/null
         verify_app MailMate MailMate
     fi
+    step_prog "MailMate"
 
     if [ "$INSTALL_QTOX" = "да" ] && ! app_installed qtox; then
         info "qTox — ставлю."
@@ -873,6 +918,7 @@ if ! stage_done apps; then
             err "qTox: не смог получить ссылку из GitHub API. Ставь вручную: https://qtox.github.io"
         fi
     fi
+    step_prog "qTox"
 
     if ! app_installed tukan; then
         info "Tukan — ставлю."
@@ -880,6 +926,7 @@ if ! stage_done apps; then
     else
         ok "Tukan уже стоит."
     fi
+    step_prog "Tukan"
 
     if [ "$INSTALL_EXCEL" = "да" ]; then
         if ! find /Applications -maxdepth 1 -iname "*excel*.app" 2>/dev/null | grep -q .; then
@@ -893,6 +940,7 @@ if ! stage_done apps; then
             fi
         fi
     fi
+    step_prog "Excel"
 
     # Текстовые расширения -> Sublime Text через LaunchServices (secure plist).
     # Раньше был duti: он на свежих macOS ставил часть расширений и молча падал
@@ -950,6 +998,7 @@ if ! stage_done apps; then
             fi
         fi
     fi
+    step_prog "Расширения"
 
     # VeraCrypt + FUSE-T (нужны для секретного диска)
     if ! pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
@@ -989,6 +1038,7 @@ if ! stage_done apps; then
     if [ -d "/Applications/Linken Sphere.app" ] && [ -d "/Applications/Linken Sphere 2.app" ]; then
         warn "В Программах и «Linken Sphere», и «Linken Sphere 2». Рабочая — 2. Старую НЕ трогаю (вдруг нужна) — удали руками, если точно не нужна."
     fi
+    ding_subtle
     stage_mark apps
 fi
 
@@ -1185,6 +1235,7 @@ if ! stage_done disk; then
     [ -n "$VUUID" ] && echo "vol_uuid=$VUUID" >> "$STAGE_FILE"
 
     ok "Секретный диск подключен: $VOL_NAME"
+    ding
     stage_mark disk
 fi
 
@@ -1373,6 +1424,7 @@ if ! stage_done data; then
             ALL_OK=1; err "$lbl — НЕ подключен. Смотри сообщения выше."
         fi
     done
+    ding_subtle
     stage_mark data
 fi
 
@@ -1423,6 +1475,10 @@ ADMIN_PASS=""; unset ADMIN_PASS USER_PASS USER_PASS2
 run_selfcheck() {
     step "САМОПРОВЕРКА / SELF-CHECK"
     local key src lbl tgt n bad=0 total=0 good=0
+    local ROWS=""
+    row() { # row <статус-символ> <цвет> <имя> <деталь>
+        ROWS="$ROWS$2  $1 $(printf '%-14s' "$3")${NC} ${GREY}$4${NC}\n"
+    }
     for key in $(app_keys); do
         [ "$key" = "mailmate" ] && [ "$INSTALL_MM" != "да" ] && ! app_installed mailmate && continue
         [ "$key" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && ! app_installed qtox && continue
@@ -1433,28 +1489,40 @@ run_selfcheck() {
             if [ -d "$tgt" ]; then
                 n=$(ls -A "$tgt" 2>/dev/null | wc -l | tr -d ' ')
                 if "fp_$key" "$tgt" 2>/dev/null; then
-                    good=$((good + 1)); ok "$lbl — на диске, данные опознаны ($n объектов)."
+                    good=$((good + 1)); row "✓" "$GREEN" "$lbl" "на диске, данные опознаны ($n объектов)"
                 elif [ "$n" -gt 0 ]; then
-                    good=$((good + 1)); ok "$lbl — на диске ($n объектов, папка нестандартная, но не пустая)."
+                    good=$((good + 1)); row "✓" "$GREEN" "$lbl" "на диске ($n объектов, нестандартная папка)"
                 else
-                    warn "$lbl — ссылка есть, папка на диске ПУСТАЯ (заполнится после первого запуска)."
+                    row "▲" "$YELLOW" "$lbl" "папка на диске пустая (заполнится при запуске)"
                 fi
             else
-                err "$lbl — ссылка БИТАЯ (цель недоступна). Диск смонтирован?"
+                row "✗" "$RED" "$lbl" "ссылка БИТАЯ — диск смонтирован?"
                 bad=$((bad + 1))
             fi
         else
-            err "$lbl — НЕ ссылка (данные локальные или папки нет)."
+            row "✗" "$RED" "$lbl" "НЕ ссылка — данные локальные или папки нет"
             bad=$((bad + 1))
         fi
     done
     total=$((total + 3))
-    if fdesetup status 2>/dev/null | grep -qi "is On"; then good=$((good + 1)); ok "FileVault включен."
-    else err "FileVault НЕ включен."; bad=$((bad + 1)); fi
-    if [ "$(defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null)" = "1" ]; then good=$((good + 1)); ok "Брандмауэр включен."
-    else err "Брандмауэр НЕ включен."; bad=$((bad + 1)); fi
-    if [ -d /Applications/VeraCrypt.app ] && pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then good=$((good + 1)); ok "VeraCrypt + FUSE-T на месте."
-    else err "VeraCrypt/FUSE-T не найдены."; bad=$((bad + 1)); fi
+    if fdesetup status 2>/dev/null | grep -qi "is On"; then good=$((good + 1)); row "✓" "$GREEN" "FileVault" "диск зашифрован"
+    else row "✗" "$RED" "FileVault" "НЕ включен"; bad=$((bad + 1)); fi
+    if [ "$(defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null)" = "1" ]; then good=$((good + 1)); row "✓" "$GREEN" "Брандмауэр" "включен"
+    else row "✗" "$RED" "Брандмауэр" "НЕ включен"; bad=$((bad + 1)); fi
+    if [ -d /Applications/VeraCrypt.app ] && pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then good=$((good + 1)); row "✓" "$GREEN" "VeraCrypt" "установлен + FUSE-T"
+    else row "✗" "$RED" "VeraCrypt" "не найден / нет FUSE-T"; bad=$((bad + 1)); fi
+
+    local W=58
+    echo ""
+    echo -e "  ${CYAN}┌$(rep "─" $W)┐${NC}"
+    echo -e "  ${CYAN}│${NC}${BOLD}  ИТОГ САМОПРОВЕРКИ$(rep " " $((W - 20)))${NC}${CYAN}│${NC}"
+    echo -e "  ${CYAN}├$(rep "─" $W)┤${NC}"
+    printf '%b' "$ROWS" | while IFS= read -r rline; do
+        local vis
+        vis=$(printf '%s' "$rline" | sed $'s/\033\[[0-9;]*m//g')
+        printf '  \033[0;36m│\033[0m%s%*s\033[0;36m│\033[0m\n' "$rline" $((W - ${#vis})) ""
+    done
+    echo -e "  ${CYAN}└$(rep "─" $W)┘${NC}"
     echo ""
     if [ "$bad" = "0" ]; then
         echo -e "  ${GREEN}${BOLD}✓ САМОПРОВЕРКА: $good/$total — всё зелёное.${NC}"
@@ -1474,6 +1542,7 @@ printf '\r\033[2K'
 killall Finder 2>/dev/null
 
 run_selfcheck
+ding
 
 echo ""
 echo -e "  ${GREEN}$(rep "━" "$(tw)")${NC}"
