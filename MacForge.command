@@ -135,6 +135,17 @@ EOF
 )
 if [ -f "$CONFIG_FILE" ]; then
     . "$CONFIG_FILE"
+    # Миграция конфига от старых прогонов: launchpadlibrarian.net (CDN
+    # launchpad.net) из части сетей мертв — если конфиг еще тащит launchpad
+    # как основной источник VeraCrypt, подменяем на GitHub-релиз и правим
+    # сам файл, чтобы старый адрес не воскресал при следующих запусках.
+    case "${VC_URL:-}" in
+        *launchpad.net*)
+            VC_URL="https://github.com/veracrypt/VeraCrypt/releases/download/VeraCrypt_1.26.29/VeraCrypt_FUSE-T_1.26.29.dmg"
+            sed -i '' 's|^VC_URL=.*|VC_URL="'"$VC_URL"'"|' "$CONFIG_FILE" 2>/dev/null
+            ;;
+    esac
+    [ -z "${VC_URL_ALT:-}" ] && VC_URL_ALT="https://launchpad.net/veracrypt/trunk/1.26.29/+download/VeraCrypt_FUSE-T_1.26.29.dmg"
 else
     # В dry-run значения берем в память и файл НЕ создаем
     eval "$CONFIG_DEFAULTS"
