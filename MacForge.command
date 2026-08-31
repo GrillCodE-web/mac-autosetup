@@ -108,13 +108,12 @@ yn() {
     esac
 }
 
-# --- Конфиг: создается сам рядом со скриптом, удаляется после прогона -------
+# --- Параметры и источники загрузок: живут ТОЛЬКО здесь ---------------------
+# Внешнего конфига больше нет: autosetup.conf замораживал старые значения и
+# молча перекрывал свежие дефолты после самообновления скрипта (так старый
+# launchpad-URL качал VeraCrypt в мертвый хост вопреки новому коду).
+# Поменять что-то — правится прямо тут. autosetup.conf игнорируется.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/autosetup.conf"
-
-CONFIG_DEFAULTS=$(cat <<'EOF'
-# Автоконфиг скрипта настройки. Создан самим скриптом, удаляется после прогона.
-# Править можно между запусками; если удалить — создастся заново с дефолтами.
 FUSET_URL="https://github.com/macos-fuse-t/fuse-t/releases/download/1.2.7/fuse-t-macos-installer-1.2.7.pkg"
 # Основной источник — GitHub-релизы VeraCrypt: launchpadlibrarian.net (CDN
 # launchpad.net) из части сетей просто недоступен (curl 28, таймаут 15 сек x3).
@@ -131,26 +130,8 @@ DISK_WAIT_SEC=120
 DISPLAY_SLEEP=5
 AUTOLOGOUT_MIN=30
 LS_EXTENSIONS="txt md markdown csv tsv json xml yaml yml log ini conf cfg env sh py js toml sql"
-EOF
-)
-if [ -f "$CONFIG_FILE" ]; then
-    . "$CONFIG_FILE"
-    # Миграция конфига от старых прогонов: launchpadlibrarian.net (CDN
-    # launchpad.net) из части сетей мертв — если конфиг еще тащит launchpad
-    # как основной источник VeraCrypt, подменяем на GitHub-релиз и правим
-    # сам файл, чтобы старый адрес не воскресал при следующих запусках.
-    case "${VC_URL:-}" in
-        *launchpad.net*)
-            VC_URL="https://github.com/veracrypt/VeraCrypt/releases/download/VeraCrypt_1.26.29/VeraCrypt_FUSE-T_1.26.29.dmg"
-            sed -i '' 's|^VC_URL=.*|VC_URL="'"$VC_URL"'"|' "$CONFIG_FILE" 2>/dev/null
-            ;;
-    esac
-    [ -z "${VC_URL_ALT:-}" ] && VC_URL_ALT="https://launchpad.net/veracrypt/trunk/1.26.29/+download/VeraCrypt_FUSE-T_1.26.29.dmg"
-else
-    # В dry-run значения берем в память и файл НЕ создаем
-    eval "$CONFIG_DEFAULTS"
-    [ "$DRY_RUN" = "0" ] && printf '%s\n' "$CONFIG_DEFAULTS" > "$CONFIG_FILE"
-fi
+# Подчистка хвоста от старых версий скрипта: рядом мог остаться autosetup.conf
+[ "$DRY_RUN" = "0" ] && rm -f "$SCRIPT_DIR/autosetup.conf" 2>/dev/null
 
 [ "$DRY_RUN" = "1" ] && warn "РЕЖИМ DRY-RUN: только покажу план, ничего не изменю."
 
@@ -191,7 +172,6 @@ as_root() { printf '%s\n' "$ADMIN_PASS" | sudo -S "$@"; }
 # Проверка: мы на маке?
 if [ "$(uname)" != "Darwin" ]; then
     err "Этот скрипт работает только на macOS."
-    [ "$DRY_RUN" = "0" ] && rm -f "$CONFIG_FILE"
     exit 1
 fi
 
@@ -218,9 +198,6 @@ cleanup_exit() {
     # wait съедает job-уведомление «Terminated: 15 caffeinate» — без него shell
     # печатал эту строку в терминал при каждом выходе из скрипта.
     wait "$CAFFEINATE_PID" 2>/dev/null
-    # Конфиг с ответами стираю ТОЛЬКО при полном успехе (фаза данных отмечена):
-    # если прогон упал — ответы не спрашиваются заново при перезапуске.
-    if stage_done data; then rm -f "$CONFIG_FILE"; fi
     # Снимаем ТОЛЬКО свой лок: чужой (живого экземпляра) не трогаем
     [ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"
 }
