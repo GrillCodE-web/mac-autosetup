@@ -27,7 +27,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v13.1-2026.08.31 — геолокация по STIG (kill locationd + верификация демоном), Wi-Fi радио с фолбэком ifconfig для Tahoe, adprivacyd перезапуск после AdLib, живой URL панели Сети вместо мёртвого Network-Firewall, только Apple Silicon (Intel выпилен), поддержка macOS 14-15/26/27 (Ventura выпилена: EOL), умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
+readonly SCRIPT_VERSION="v13.2-2026.08.31 — геолокация по STIG (kill locationd + верификация демоном), Wi-Fi радио с фолбэком ifconfig для Tahoe, adprivacyd перезапуск после AdLib, живой URL панели Сети вместо мёртвого Network-Firewall, только Apple Silicon (Intel выпилен), поддержка macOS 14-15/26/27 (Ventura выпилена: EOL), умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 8 вопросов (сон экрана, автовыход, сочетание раскладки: Ctrl/Option/Cmd+Space, Caps Lock), верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -458,10 +458,40 @@ case "$(printf '%s' "$EXTRA" | tr '[:lower:]' '[:upper:]')" in
 case "$(printf '%s' "$EXTRA" | tr '[:lower:]' '[:upper:]')" in
     *E*) INSTALL_EXCEL=да ;; esac
 
-# Без вопросов (дефолты из конфига / молчаливые решения):
-#  - гашение экрана: DISPLAY_SLEEP мин (5), автовыход: AUTOLOGOUT_MIN мин (30)
-#  - раскладка: US + Russian, переключение Ctrl+Space (есть на любой клавиатуре,
-#    включая PC без Option/Cmd), Caps Lock не трогаем
+q 6 "Через сколько ГАСИТЬ ЭКРАН (сон дисплея):"
+echo "   1 — 1 мин   2 — 2 мин   3 — 5 мин"
+echo "   4 — 10 мин  5 — 15 мин  6 — 30 мин [по умолчанию]   7 — никогда"
+read -r -p "   Выбор [6]: " DS_CH
+case "${DS_CH:-6}" in
+    1) DISPLAY_SLEEP=1 ;; 2) DISPLAY_SLEEP=2 ;; 3) DISPLAY_SLEEP=5 ;;
+    4) DISPLAY_SLEEP=10 ;; 5) DISPLAY_SLEEP=15 ;; 6) DISPLAY_SLEEP=30 ;; 7) DISPLAY_SLEEP=0 ;;
+    *) warn "Непонятный ответ — беру 30 минут."; DISPLAY_SLEEP=30 ;;
+esac
+
+q 7 "Через сколько АВТОВЫХОД из системы (бездействие):"
+echo "   1 — 5 мин   2 — 10 мин  3 — 15 мин"
+echo "   4 — 30 мин [по умолчанию]   5 — 60 мин  6 — выключить"
+read -r -p "   Выбор [4]: " AL_CH
+case "${AL_CH:-4}" in
+    1) AUTOLOGOUT_MIN=5 ;; 2) AUTOLOGOUT_MIN=10 ;; 3) AUTOLOGOUT_MIN=15 ;;
+    4) AUTOLOGOUT_MIN=30 ;; 5) AUTOLOGOUT_MIN=60 ;; 6) AUTOLOGOUT_MIN=0 ;;
+    *) warn "Непонятный ответ — беру 30 минут."; AUTOLOGOUT_MIN=30 ;;
+esac
+
+q 8 "Раскладки клавиатуры: английская + русская. Сочетание переключения:"
+echo "   1 — Ctrl + Space [по умолчанию]   2 — Option(Alt) + Space"
+echo "   3 — Cmd + Space (Spotlight переедет на Ctrl+Cmd+Space)"
+echo "   4 — Caps Lock (штатное переключение macOS)"
+echo "   5 — не трогать сочетание"
+read -r -p "   Выбор [1]: " KB_CH
+KB_CH=${KB_CH:-1}
+case "$KB_CH" in 1|2|3|4|5) ;; *) warn "Непонятный ответ — беру Ctrl+Space."; KB_CH=1 ;; esac
+case "$KB_CH" in
+    1) KB_KEY="Ctrl+Space" ;; 2) KB_KEY="Option+Space" ;; 3) KB_KEY="Cmd+Space" ;;
+    4) KB_KEY="Caps Lock" ;; 5) KB_KEY="оставить как есть" ;;
+esac
+
+# Молчаливые решения без вопросов:
 #  - данные приложений на диске подключаются всегда автоматом
 #  - часовой пояс: сам по IP; спрошу, только если не определится
 
@@ -484,7 +514,9 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "  + VeraCrypt + FUSE-T — поставить, если нет"
     echo "  + FileVault — включить и ПРОВЕРИТЬ (ключ восстановления не показывается и не сохраняется)"
     echo "  + диск: $( [ "$HAVE_DISK" = "да" ] && echo 'подключить существующий (монтируешь сам в VeraCrypt)' || echo 'НОВЫЙ: шифруешь сам в окне VeraCrypt, я жду и нахожу')"
-    echo "  + часовой пояс — по IP (тихо), раскладки US+Русская, Ctrl+Space, Wi-Fi режим $WIFI_MODE"
+    echo "  + часовой пояс — по IP (тихо), раскладки US+Русская, переключение: $KB_KEY, Wi-Fi режим $WIFI_MODE"
+    [ "$KB_CH" = "3" ] && echo "    (Spotlight переедет на Ctrl+Cmd+Space)"
+    echo "  + экран гаснет: $( [ "$DISPLAY_SLEEP" = "0" ] && echo 'никогда' || echo "через $DISPLAY_SLEEP мин" ); автовыход: $( [ "$AUTOLOGOUT_MIN" = "0" ] && echo 'выключен' || echo "через $AUTOLOGOUT_MIN мин" )"
     echo "  + в конце — встроенная самопроверка (ссылки, FileVault, брандмауэр, VeraCrypt)"
     [ "$INSTALL_EXCEL" = "да" ] && echo "  + Excel — поставить"
     echo ""
@@ -855,8 +887,8 @@ if ! stage_done radio; then
 fi
 
 # ------------------------------------------------------------
-# КЛАВИАТУРА: US + Русская, переключение Ctrl+Space (тихо, без вопросов).
-# Ctrl+Space выбран потому, что он есть на ЛЮБОЙ клавиатуре, включая PC
+# КЛАВИАТУРА: US + Русская, сочетание переключения — по выбору (вопрос 8).
+# Ctrl+Space — дефолт: он есть на ЛЮБОЙ клавиатуре, включая PC
 # (Ctrl/Win/Alt) без клавиш Option и Command.
 # ------------------------------------------------------------
 if ! stage_done keyboard; then
@@ -882,19 +914,51 @@ if ! stage_done keyboard; then
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources:0:InputSourceKind string Keyboard\ Layout" "$TMPH"
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources:0:KeyboardLayout\ Name string ABC" "$TMPH"
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources:0:KeyboardLayout\ ID integer 252" "$TMPH"
-    # Горячая клавиша: Ctrl+Space
-    /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:60" "$TMPH" 2>/dev/null
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60 dict" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:enabled bool true" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value dict" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters array" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:0 integer 32" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:1 integer 49" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:2 integer 262144" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:type string standard" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:61" "$TMPH" 2>/dev/null
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61 dict" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61:enabled bool false" "$TMPH"
+    # Горячая клавиша — по выбору (вопрос 8). Модификаторы: Ctrl=262144,
+    # Option=524288, Cmd=1048576. 60/61 = пред./след. источник ввода.
+    case "$KB_CH" in
+        1|2|3)
+            case "$KB_CH" in
+                1) KB_MOD=262144 ;;
+                2) KB_MOD=524288 ;;
+                3) KB_MOD=1048576 ;;
+            esac
+            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:60" "$TMPH" 2>/dev/null
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60 dict" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:enabled bool true" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value dict" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters array" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:0 integer 32" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:1 integer 49" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:2 integer $KB_MOD" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:type string standard" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:61" "$TMPH" 2>/dev/null
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61 dict" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61:enabled bool false" "$TMPH"
+            if [ "$KB_CH" = "3" ]; then
+                # Cmd+Space занят Spotlight (hotkey 64) — переезжает на Ctrl+Cmd+Space
+                /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:64" "$TMPH" 2>/dev/null
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64 dict" "$TMPH"
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:enabled bool true" "$TMPH"
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value dict" "$TMPH"
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters array" "$TMPH"
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters:0 integer 32" "$TMPH"
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters:1 integer 49" "$TMPH"
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters:2 integer 1310720" "$TMPH"
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:type string standard" "$TMPH"
+            fi
+            ;;
+        4)
+            # Caps Lock — штатный механизм macOS, хоткеи 60/61 выключаем
+            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:60" "$TMPH" 2>/dev/null
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60 dict" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:enabled bool false" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:61" "$TMPH" 2>/dev/null
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61 dict" "$TMPH"
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61:enabled bool false" "$TMPH"
+            ;;
+        5) : ;;  # сочетание не трогаем
+    esac
     defaults import com.apple.HIToolbox "$TMPH" 2>/dev/null || cp "$TMPH" "$KB_PLIST"
     rm -f "$TMPH"
     # Русская — в историю выбранных (иначе macOS может выкинуть её из меню)
@@ -911,14 +975,24 @@ if ! stage_done keyboard; then
     killall SystemUIServer 2>/dev/null
     osascript -e 'tell application "System Events" to keystroke ""' >/dev/null 2>&1
     sleep 2
+    # Caps Lock как переключатель раскладки — штатный ключ macOS (NSGlobalDomain)
+    if [ "$KB_CH" = "4" ]; then
+        defaults write NSGlobalDomain TISRomanSwitchState -int 1 2>/dev/null
+    elif [ "$KB_CH" != "5" ]; then
+        defaults write NSGlobalDomain TISRomanSwitchState -int 0 2>/dev/null
+    fi
     # defaults read печатает ключи с пробелами В КАВЫЧКАХ: "KeyboardLayout Name" = ABC;
     # поэтому паттерн «KeyboardLayout Name = ABC» не матчился НИКОГДА — раскладка
     # записывалась, а проверка ложно падала. Матчим ключ и значение через .*
     KB_SRCS=$(defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null)
     if printf '%s' "$KB_SRCS" | grep -q RussianWin \
        && printf '%s' "$KB_SRCS" | grep -q "KeyboardLayout Name.*ABC"; then
-        ok "Раскладки: ABC + Русская, переключение Ctrl+Space (подтверждено)."
-        dim "Если флажка в строке меню нет — нажми Ctrl+Space один раз, иконка оживет."
+        ok "Раскладки: ABC + Русская, переключение: $KB_KEY (подтверждено)."
+        case "$KB_CH" in
+            1|2|3) dim "Если флажка в строке меню нет — нажми $KB_KEY один раз, иконка оживет." ;;
+            4) dim "Caps Lock переключает раскладку штатно; если нет — Настройки → Клавиатура → Источники ввода → «Использовать Caps Lock»." ;;
+        esac
+        [ "$KB_CH" = "3" ] && dim "Spotlight теперь на Ctrl+Cmd+Space."
     else
         warn "Не записалось. Открываю Настройки -> Клавиатура -> добавь Русская (+)."
         open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null
@@ -2062,7 +2136,9 @@ as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autolog
 defaults -currentHost write com.apple.screensaver idleTime -int ${SAVED_SS_IDLE:-300} 2>/dev/null
 as_root pmset -a displaysleep "$DISPLAY_SLEEP" 2>/dev/null
 as_root pmset -a sleep 0 2>/dev/null
-ok "Экран гаснет через $DISPLAY_SLEEP мин, автовыход через $AUTOLOGOUT_MIN мин."
+DS_TXT="никогда"; [ "$DISPLAY_SLEEP" != "0" ] && DS_TXT="через $DISPLAY_SLEEP мин"
+AL_TXT="выключен"; [ "$AUTOLOGOUT_MIN" != "0" ] && AL_TXT="через $AUTOLOGOUT_MIN мин"
+ok "Экран гаснет: $DS_TXT, автовыход: $AL_TXT."
 
 # В Загрузках чистим ТОЛЬКО то, что могли скачать сами: раньше сносились
 # все *.dmg/*.pkg/*.zip, включая личные файлы пользователя.
