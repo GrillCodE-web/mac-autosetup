@@ -419,11 +419,16 @@ else
     done
 fi
 
-# Проверка Full Disk Access у Терминала — заранее, а не сюрпризом в конце
+# Проверка Full Disk Access у Терминала — заранее, а не сюрпризом в конце.
+# Без FDA закрыты контейнеры sandbox-приложений (Tukan живет в
+# ~/Library/Containers) — их данные на диск не перенести.
 FDA=1
 ls "$HOME/Library/Safari" >/dev/null 2>&1 || FDA=0
 if [ "$FDA" = "0" ]; then
-    warn "У Терминала нет Полного доступа к диску — если что-то упрется в права, в конце скажу, что выдать."
+    warn "У Терминала нет Полного доступа к диску — без него не подключить данные Tukan (sandbox-контейнер)."
+    open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles" 2>/dev/null
+    info "Открыл Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску: включи там Терминал."
+    info "Внимание: macOS применяет это к НОВОМУ окну Терминала — если в конце Tukan так и не подключится, перезапусти скрипт: фазы подхватятся, доедет только он."
 fi
 
 q 3 "Внешний диск (флешка/SSD) для секретных данных:"
@@ -1807,6 +1812,20 @@ link_to() {
             return 1
         fi
     else
+        # Контейнер sandbox-приложения без FDA: rm локальной папки молча не
+        # сработал выше, и ln уперся в существующий путь. Даем шанс выдать
+        # Полный доступ прямо сейчас и повторяем ОДИН раз (сработает, если
+        # TCC применил право без перезапуска Терминала — на части версий да).
+        if [ "${FDA:-1}" = "0" ] && printf '%s' "$src" | grep -q "/Library/Containers/"; then
+            warn "$(app_label "$fpkey"): упёрся в права — это контейнер sandbox-приложения, нужен Полный доступ к диску."
+            open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles" 2>/dev/null
+            read -r -p "   Включи Терминалу Полный доступ к диску в открытых Настройках и нажми Enter: "
+            rm -rf "$src" 2>/dev/null
+            if [ ! -e "$src" ] && ln -s "$dst" "$src" 2>/dev/null && [ -d "$dst" ]; then
+                ok "$(app_label "$fpkey"): подключен к диску ($(ls -A "$dst" 2>/dev/null | wc -l | tr -d ' ') объектов на диске)."
+                return 0
+            fi
+        fi
         err "$(app_label "$fpkey"): НЕ смог подключить $src — обычно это права Терминала (Полный доступ к диску)."
         return 1
     fi
