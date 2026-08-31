@@ -1977,7 +1977,7 @@ as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autolog
 defaults -currentHost write com.apple.screensaver idleTime -int ${SAVED_SS_IDLE:-300} 2>/dev/null
 as_root pmset -a displaysleep "$DISPLAY_SLEEP" 2>/dev/null
 as_root pmset -a sleep 0 2>/dev/null
-ok "Экран гаснет через $DISPLAY_SLEEP мин, автовыход через $AUTOLOGOUT_MIN мин (как в конфиге)."
+ok "Экран гаснет через $DISPLAY_SLEEP мин, автовыход через $AUTOLOGOUT_MIN мин."
 
 # В Загрузках чистим ТОЛЬКО то, что могли скачать сами: раньше сносились
 # все *.dmg/*.pkg/*.zip, включая личные файлы пользователя.
