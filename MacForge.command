@@ -1574,7 +1574,10 @@ if ! stage_done vol_hygiene; then
     else
         dim "Spotlight: статус перечитать не смог — не критично."
     fi
-    as_root tmutil addexclusion -p "$VOL_NAME" 2>/dev/null
+    # addexclusion на Swift: повторный запуск для уже исключенного тома падает
+    # с POSIXError Code=22 ПРЯМО В STDOUT (stderr тут не при делах). Глушим оба
+    # потока — решает все равно isexcluded ниже.
+    as_root tmutil addexclusion -p "$VOL_NAME" >/dev/null 2>&1
     if tmutil isexcluded "$VOL_NAME" 2>/dev/null | grep -qi "\[Excluded\]"; then
         ok "Том исключен из Time Machine (подтверждено)."
     else
@@ -1958,8 +1961,23 @@ run_selfcheck() {
     total=$((total + 3))
     if fdesetup status 2>/dev/null | grep -qi "is On"; then good=$((good + 1)); row "✓" "$GREEN" "FileVault" "диск зашифрован"
     else row "✗" "$RED" "FileVault" "НЕ включен"; bad=$((bad + 1)); fi
-    if [ "$(defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null)" = "1" ]; then good=$((good + 1)); row "✓" "$GREEN" "Брандмауэр" "включен"
-    else row "✗" "$RED" "Брандмауэр" "НЕ включен"; bad=$((bad + 1)); fi
+    # Без sudo: /Library/Preferences/com.apple.alf.plist обычному юзеру недоступен,
+    # defaults read молча возвращал пустоту — ложный ✗. Пароль к этому моменту уже
+    # стерт выше, поэтому root только через живой таймстамп sudo (-n); на ряде
+    # версий macOS --getglobalstate читается и вовсе без root — пробуем оба пути.
+    # Если прочитать не удалось — честный ▲, а не выдуманный ✗.
+    FW_ST=""
+    if sudo -n true 2>/dev/null; then
+        FW_ST=$(sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null)
+    fi
+    [ -z "$FW_ST" ] && FW_ST=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null)
+    if printf '%s' "$FW_ST" | grep -qi enabled; then
+        good=$((good + 1)); row "✓" "$GREEN" "Брандмауэр" "включен"
+    elif [ -n "$FW_ST" ]; then
+        row "✗" "$RED" "Брандмауэр" "НЕ включен"; bad=$((bad + 1))
+    else
+        warnc=$((warnc + 1)); row "▲" "$YELLOW" "Брандмауэр" "статус не прочитался — глянь в Настройки -> Сеть"
+    fi
     if [ -d /Applications/VeraCrypt.app ] && pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then good=$((good + 1)); row "✓" "$GREEN" "VeraCrypt" "установлен + FUSE-T"
     else row "✗" "$RED" "VeraCrypt" "не найден / нет FUSE-T"; bad=$((bad + 1)); fi
     # Инфо-строка (не в счет): сколько свободно на секретном томе
