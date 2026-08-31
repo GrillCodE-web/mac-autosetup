@@ -1402,17 +1402,36 @@ stage_val() { # stage_val <ключ>
 }
 
 list_external() {
-    local p=/tmp/disks.plist i=0 n j wn
-    diskutil list -plist external physical > "$p" 2>/dev/null || return 1
-    n=$(/usr/libexec/PlistBuddy -c "Print :AllDisksAndPartitions" "$p" 2>/dev/null | grep -c "Dict {" || true)
-    while [ "$i" -lt "${n:-0}" ]; do
-        j=0
-        while :; do
-            wn=$(/usr/libexec/PlistBuddy -c "Print :AllDisksAndPartitions:$i:WholeDisks:$j" "$p" 2>/dev/null) || break
-            printf '%s\n' "$wn"; j=$((j + 1))
+    # Внешние физические диски в ЛЮБОМ состоянии: вставлен без монтирования
+    # (у VeraCrypt-диска macOS том не монтирует вовсе), смонтирован, за хабом.
+    {
+        # 1) Штатный путь: честный флаг external от diskutil.
+        local p=/tmp/disks.plist i=0 n j wn
+        diskutil list -plist external physical > "$p" 2>/dev/null
+        n=$(/usr/libexec/PlistBuddy -c "Print :AllDisksAndPartitions" "$p" 2>/dev/null | grep -c "Dict {" || true)
+        while [ "$i" -lt "${n:-0}" ]; do
+            j=0
+            while :; do
+                wn=$(/usr/libexec/PlistBuddy -c "Print :AllDisksAndPartitions:$i:WholeDisks:$j" "$p" 2>/dev/null) || break
+                printf '%s\n' "$wn"; j=$((j + 1))
+            done
+            i=$((i + 1))
         done
-        i=$((i + 1))
-    done | sort -u
+        # 2) Путь без доверия к флагу external (хабы/переходники его врут):
+        # ЛЮБОЙ диск, который не Internal и не Virtual (синтезированные APFS-
+        # контейнеры), — внешний. Монтирование и файловая система не важны.
+        local d intern virt
+        diskutil list -plist > /tmp/disks_all.plist 2>/dev/null
+        for d in $(/usr/libexec/PlistBuddy -c "Print :AllDisks" /tmp/disks_all.plist 2>/dev/null | grep -oE 'disk[0-9]+'); do
+            diskutil info -plist "$d" > /tmp/disk_info.plist 2>/dev/null || continue
+            intern=$(/usr/libexec/PlistBuddy -c "Print :Internal" /tmp/disk_info.plist 2>/dev/null)
+            [ "$intern" = "true" ] && continue
+            virt=$(/usr/libexec/PlistBuddy -c "Print :Virtual" /tmp/disk_info.plist 2>/dev/null)
+            [ "$virt" = "true" ] && continue
+            printf '%s\n' "$d"
+        done
+        rm -f /tmp/disks_all.plist /tmp/disk_info.plist
+    } | sort -u
 }
 
 wait_new_disk() {
@@ -1549,6 +1568,9 @@ if ! stage_done disk; then
             exit 1
         else
             info "Вставь свой секретный диск (который уже зашифрован)."
+            # Зашифрованный диск macOS не читает: вылезет окно «не читается» —
+            # это НОРМАЛЬНО. Кнопка «Инициализировать» там уничтожит данные.
+            warn "Если macOS покажет окно «диск не читается» — жми ТОЛЬКО «Игнорировать». «Инициализировать» — НИКОГДА."
             DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || {
                 err "Не увидел новый диск за $DISK_WAIT_SEC сек."
                 warn "Если диск УЖЕ был вставлен — вынь и вставь еще раз. Смотрю еще $DISK_WAIT_SEC сек..."
