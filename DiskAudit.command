@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  PREINSTALL AUDIT — АУДИТ ДИСКА И СИСТЕМЫ — v3
+#  DISK AUDIT — АУДИТ ДИСКА И СИСТЕМЫ — v3
 #  v3: чистый вывод — без простыней: app.ls показывается ОДИН раз,
 #  внутрь опознанных папок не лезем, Apple-контейнеры не светятся.
 #  ТОЛЬКО ЧИТАЕТ. Ничего не меняет, ничего не удаляет,
@@ -9,7 +9,7 @@
 #  Запуск: двойной клик. Диск должен быть вставлен;
 #  если не смонтирован — скрипт подождет, пока смонтируешь
 #  через VeraCrypt сам.
-#  Отпечатки папок совпадают с MacForge.command v12.6+.
+#  Отпечатки папок совпадают с MacForge.command v13.x.
 #  В конце: выдели весь вывод (Cmd+A, Cmd+C) и скинь разработчику.
 # ============================================================
 
@@ -155,7 +155,7 @@ fp() {
     if [ -d "$d/Local" ] && [ -d "$d/Packages" ]; then echo "SUBLIME (Local + Packages)"; return 0; fi
     if find "$d" -maxdepth 1 -name "*.tox" 2>/dev/null | grep -q .; then echo "QTOX (*.tox)"; return 0; fi
     if [ -d "$d/Messages" ]; then echo "MAILMATE (Messages)"; return 0; fi
-    # Tukan: контейнер macOS с bundle id me.tukan.tukan (как fp_tukan в AutoInstaller)
+    # Tukan: контейнер macOS с bundle id me.tukan.tukan (как fp_tukan в MacForge)
     if [ -e "$d/.com.apple.containermanagerd.metadata.plist" ]; then
         if grep -qa "me.tukan.tukan" "$d/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; then
             echo "TUKAN (контейнер me.tukan.tukan)"; return 0
