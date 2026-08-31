@@ -572,9 +572,14 @@ if ! stage_done hardening; then
     # Пароль сразу после сна/заставки — ОДИН раз, с проверкой.
     # ДВЕ строки в пайпе: первую съедает sudo -S, вторую читает sysadminctl -password -.
     SL_MANUAL=0
-    printf '%s\n%s\n' "$ADMIN_PASS" "$ADMIN_PASS" | sudo -S sysadminctl -screenLock immediate -password - 2>/dev/null
+    # sysadminctl дергаем от САМОГО пользователя, без sudo: настройка живет в его
+    # связке ключей, под root она либо отклоняется, либо пишется не туда.
+    printf '%s\n' "$ADMIN_PASS" | sysadminctl -screenLock immediate -password - 2>/dev/null
     sleep 1
-    if sysadminctl -screenLock status 2>/dev/null | grep -qi immediate; then
+    # status печатает ответ в STDERR (NSLog-формат «sysadminctl[pid] ...»), поэтому
+    # 2>&1 обязателен — с 2>/dev/null проверка всегда видела пустоту и ложно ругалась.
+    # Для «сразу» система пишет либо "immediate", либо "delay is 0" — принимаем оба.
+    if sysadminctl -screenLock status 2>&1 | grep -qiE "immediate|delay is 0"; then
         ok "Пароль после сна и заставки — сразу (подтверждено)."
     else
         warn "Не подтвердилось — включи вручную: Настройки -> Экран блокировки -> «Сразу»."
@@ -603,7 +608,17 @@ if ! stage_done hardening; then
     if [ "$FW_MANUAL" = "0" ]; then
         as_root "$SOCKETFW" --setstealthmode on >/dev/null 2>&1
         sleep 1
-        if as_root "$SOCKETFW" --getstealthmode 2>/dev/null | grep -qi enabled; then
+        # CLI-вывод иногда запаздывает/меняет формат между версиями macOS —
+        # даем 3 попытки, а потом сверяемся с plist, куда настройка пишется сразу.
+        STEALTH_OK=0
+        for _i in 1 2 3; do
+            as_root "$SOCKETFW" --getstealthmode 2>/dev/null | grep -qi enabled && { STEALTH_OK=1; break; }
+            sleep 2
+        done
+        if [ "$STEALTH_OK" = "0" ]; then
+            [ "$(as_root /usr/libexec/PlistBuddy -c "Print :stealthenabled" /Library/Preferences/com.apple.alf.plist 2>/dev/null)" = "1" ] && STEALTH_OK=1
+        fi
+        if [ "$STEALTH_OK" = "1" ]; then
             ok "Режим невидимости включен (подтверждено)."
         else
             warn "Невидимость не подтвердилась: Настройки -> Сеть -> Брандмауэр -> Параметры."
@@ -620,7 +635,9 @@ if ! stage_done hardening; then
     as_root launchctl disable system/com.apple.RemoteManagement 2>/dev/null
     as_root launchctl disable system/com.apple.ARDAgent 2>/dev/null
     as_root /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -deactivate -stop 2>/dev/null
-    as_root systemsetup -setremotelogin off 2>/dev/null
+    # Флаг -f глушит интерактивный вопрос «Do you really want to turn remote login
+    # off?» — без него systemsetup читает stdin, получает EOF и спамит вопрос по кругу.
+    as_root systemsetup -f -setremotelogin off 2>/dev/null
     SHARE_LEFT=0
     pgrep -x screensharingd >/dev/null 2>&1 && SHARE_LEFT=1
     pgrep -x ARDAgent >/dev/null 2>&1 && SHARE_LEFT=1
@@ -807,6 +824,11 @@ if ! stage_done radio; then
     info "Определяю часовой пояс по IP..."
     TZ_ZONE=$(curl -s --max-time 8 https://ipapi.co/timezone 2>/dev/null)
     case "$TZ_ZONE" in Europe/*|Asia/*|Africa/*|America/*|Australia/*|Pacific/*) ;; *) TZ_ZONE="" ;; esac
+    if [ -z "$TZ_ZONE" ]; then
+        # Фолбэк: ipapi.co иногда молчит (лимиты/VPN/блокировка) — пробуем worldtimeapi.
+        TZ_ZONE=$(curl -s --max-time 8 https://worldtimeapi.org/api/ip 2>/dev/null | sed -n 's/.*"timezone"[": ]*"\([^"]*\)".*/\1/p')
+        case "$TZ_ZONE" in Europe/*|Asia/*|Africa/*|America/*|Australia/*|Pacific/*) ;; *) TZ_ZONE="" ;; esac
+    fi
     if [ -n "$TZ_ZONE" ]; then
         as_root systemsetup -settimezone "$TZ_ZONE" 2>/dev/null
         readlink /etc/localtime 2>/dev/null | grep -q "$TZ_ZONE" \
@@ -884,8 +906,12 @@ if ! stage_done keyboard; then
     killall SystemUIServer 2>/dev/null
     osascript -e 'tell application "System Events" to keystroke ""' >/dev/null 2>&1
     sleep 2
-    if defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q RussianWin \
-       && defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q "KeyboardLayout Name = ABC"; then
+    # defaults read печатает ключи с пробелами В КАВЫЧКАХ: "KeyboardLayout Name" = ABC;
+    # поэтому паттерн «KeyboardLayout Name = ABC» не матчился НИКОГДА — раскладка
+    # записывалась, а проверка ложно падала. Матчим ключ и значение через .*
+    KB_SRCS=$(defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null)
+    if printf '%s' "$KB_SRCS" | grep -q RussianWin \
+       && printf '%s' "$KB_SRCS" | grep -q "KeyboardLayout Name.*ABC"; then
         ok "Раскладки: ABC + Русская, переключение Ctrl+Space (подтверждено)."
         dim "Если флажка в строке меню нет — нажми Ctrl+Space один раз, иконка оживет."
     else
@@ -1401,13 +1427,33 @@ if ! stage_done disk; then
 
     DISK_DEV=""
     BEFORE_PLUG=$(list_external)
-    if [ "$HAVE_DISK" = "да" ]; then
-        info "Вставь свой секретный диск (который уже зашифрован)."
-        DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || {
-            err "Не увидел новый диск за $DISK_WAIT_SEC сек."
-            warn "Если диск УЖЕ был вставлен — вынь и вставь еще раз. Смотрю еще $DISK_WAIT_SEC сек..."
-            DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || { err "Диск не найден. Разберись с диском и запусти скрипт заново."; exit 1; }
-        }
+    # Если том VeraCrypt УЖЕ смонтирован (диск вставили до этой фазы) — не просим
+    # перетывать: wait_new_disk ждет только НОВЫЙ диск и вечно молчал бы.
+    PRE_MOUNTED=""
+    [ "$HAVE_DISK" = "да" ] && PRE_MOUNTED=$(vc_mounted_vol 2>/dev/null || true)
+    if [ "$HAVE_DISK" = "да" ] && [ -n "$PRE_MOUNTED" ]; then
+        ok "Секретный том уже смонтирован: $PRE_MOUNTED — вставлять ничего не нужно."
+        # Физический диск для UUID-сверки: берем, только если внешний ровно один.
+        [ "$(printf '%s\n' "$BEFORE_PLUG" | grep -c .)" = "1" ] && DISK_DEV=$BEFORE_PLUG
+    elif [ "$HAVE_DISK" = "да" ]; then
+        # Диск мог быть вставлен ДО этой фазы: для wait_new_disk он не «новый»,
+        # и скрипт молча ждал бы до таймаута. Если внешний ровно один — это он.
+        N_EXT=$(printf '%s\n' "$BEFORE_PLUG" | grep -c . || true)
+        if [ "$N_EXT" = "1" ]; then
+            DISK_DEV=$BEFORE_PLUG
+            info "Секретный диск уже вставлен: /dev/$DISK_DEV — перетыкать не нужно."
+        elif [ "${N_EXT:-0}" -gt 1 ]; then
+            err "Вижу несколько внешних дисков — не знаю, какой из них секретный."
+            warn "Оставь вставленным ТОЛЬКО секретный диск и запусти скрипт заново."
+            exit 1
+        else
+            info "Вставь свой секретный диск (который уже зашифрован)."
+            DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || {
+                err "Не увидел новый диск за $DISK_WAIT_SEC сек."
+                warn "Если диск УЖЕ был вставлен — вынь и вставь еще раз. Смотрю еще $DISK_WAIT_SEC сек..."
+                DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || { err "Диск не найден. Разберись с диском и запусти скрипт заново."; exit 1; }
+            }
+        fi
     else
         info "Вставь НОВЫЙ диск, который будем шифровать."
         DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || { err "Не увидел новый диск за $DISK_WAIT_SEC сек."; exit 1; }
@@ -1435,9 +1481,12 @@ if ! stage_done disk; then
     DISK_UUID=""
     [ -n "$DISK_DEV" ] && DISK_UUID=$(disk_field "$DISK_DEV" DiskUUID 2>/dev/null)
 
-    if [ "$HAVE_DISK" = "да" ]; then
+    if [ "$HAVE_DISK" = "да" ] && [ -n "$PRE_MOUNTED" ]; then
+        # Уже смонтирован до фазы — VeraCrypt не открываем, ждать нечего.
+        VOL_NAME=$PRE_MOUNTED
+    elif [ "$HAVE_DISK" = "да" ]; then
         sub "Монтирование секретного диска — через VeraCrypt (пароль знаешь только ты)"
-        echo "    1) Открою VeraCrypt. Нажми  ${BOLD}Select Device...${NC}  -> выбери свой диск (строка вида /dev/diskXs1)"
+        echo "    1) Открою VeraCrypt. Нажми  ${BOLD}Select Device...${NC}  -> выбери раздел своего диска (/dev/${DISK_DEV:-diskX}s1)"
         echo "    2) Нажми  ${BOLD}Mount${NC}  -> введи пароль диска (если был PIM — VeraCrypt сама спросит)"
         echo "    3) Диск появится в Finder сбоку — значит смонтировался"
         open -a VeraCrypt 2>/dev/null
