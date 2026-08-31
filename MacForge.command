@@ -1135,7 +1135,8 @@ if ! stage_done apps; then
     fi
     step_prog "Linken Sphere"
 
-    if [ "$INSTALL_MM" = "да" ] && ! app_installed mailmate; then
+    # Как и qTox: данные на диске = намерение пользователя, даже если M не выбран.
+    if ! app_installed mailmate && { [ "$INSTALL_MM" = "да" ] || precheck_data mailmate; }; then
         info "MailMate — ставлю."
         MM_OK=0
         if fetch "$MM_URL" /tmp/MailMate.tbz "MailMate" && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null); then
@@ -1153,7 +1154,10 @@ if ! stage_done apps; then
     fi
     step_prog "MailMate"
 
-    if [ "$INSTALL_QTOX" = "да" ] && ! app_installed qtox; then
+    # Ставим, если выбран буквой Q ИЛИ данные qTox уже живут на диске (прошлая
+    # попытка установки упала, а в новом прогоне Q не выбрали — приложение без
+    # своих данных бессмысленно, доустанавливаем молча).
+    if ! app_installed qtox && { [ "$INSTALL_QTOX" = "да" ] || precheck_data qtox; }; then
         info "qTox — ставлю."
         net_wait
         QTOX_URL=""
@@ -1254,7 +1258,7 @@ if ! stage_done apps; then
     # VeraCrypt + FUSE-T (нужны для секретного диска)
     if ! pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
         info "FUSE-T (драйвер дисков) — ставлю."
-        install_pkg_url "$FUSET_URL" "fuse-t"
+        install_pkg_url "$FUSET_URL" "fuse-t" || true
         if pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then ok "FUSE-T установлен."
         else warn "FUSE-T не подтвердился — VeraCrypt может не увидеть диск."; fi
     fi
@@ -1296,7 +1300,8 @@ fi
 
 # ------------------------------------------------------------
 # ФАЗА 4: FileVault — ВКЛЮЧИТЬ И ПРОВЕРИТЬ.
-# Ключ восстановления НЕ показывается на экране и НИГДЕ не сохраняется.
+# Ключ восстановления показывается ОДИН РАЗ прямо в терминал (/dev/tty) —
+# в переменных скрипта не задерживается, ни в какие файлы не пишется.
 # ------------------------------------------------------------
 if ! stage_done filevault; then
     step "FILEVAULT — ШИФРОВАНИЕ ДИСКА" "4/6"
@@ -1324,10 +1329,14 @@ if ! stage_done filevault; then
 <key>Username</key><string>%s</string>
 <key>Password</key><string>%s</string>
 </dict></plist>' "$FV_USER" "$FV_PASS_ESC"; } | sudo -S -k fdesetup enable -user "$FV_USER" -inputplist 2>&1)
+        # Ключ восстановления (6 групп по 4 символа) вытаскиваем и показываем
+        # ОДИН РАЗ прямо в терминал. Печать идет в /dev/tty, а не в stdout:
+        # при перенаправлении вывода ключ не попадет ни в какой файл/лог.
+        # В переменной он живет пару строк и сразу затирается.
+        FV_KEY=$(printf '%s' "$FV_OUT" | grep -oE '([A-Z0-9]{4}-){5}[A-Z0-9]{4}' | head -1)
         # Пароль из памяти убираем сразу, но причину отказа сохраняем: раньше
         # FV_OUT затирался целиком и диагностировать неудачу было нечем.
-        # Ключ восстановления — 6 групп по 4 символа: строки с ним отбрасываем,
-        # как и все, что похоже на пароль пользователя.
+        # Строки с ключом отбрасываем, как и все, что похоже на пароль пользователя.
         FV_ERR=$(printf '%s' "$FV_OUT" \
             | grep -vi "recovery key\|[A-Z0-9]\{4\}-[A-Z0-9]\{4\}-[A-Z0-9]\{4\}" \
             | grep -v "^Password:" | grep . | head -2)
@@ -1336,14 +1345,20 @@ if ! stage_done filevault; then
         FV_ST=$(fdesetup status 2>/dev/null)
         if printf '%s' "$FV_ST" | grep -qi "is On\|in progress"; then
             ok "FileVault включен — диск зашифруется в фоне (подтверждено: $(printf '%s' "$FV_ST" | head -1))."
-            info "Ключ восстановления скриптом не показывается и не сохраняется нигде — так решено."
+            if [ -n "$FV_KEY" ]; then
+                printf '\n  %s%s>>> КЛЮЧ ВОССТАНОВЛЕНИЯ FILEVAULT <<<%s\n' "$YELLOW" "$BOLD" "$NC" > /dev/tty
+                printf '  %s%s%s%s\n' "$BOLD" "$YELLOW" "$FV_KEY" "$NC" > /dev/tty
+                printf '  %sЗапиши его на бумагу СЕЙЧАС — скрипт его НИГДЕ не сохранил и больше не покажет.%s\n\n' "$YELLOW" "$NC" > /dev/tty
+            else
+                warn "Ключ восстановления из вывода fdesetup не достался — посмотри его: sudo fdesetup changerecovery -personal"
+            fi
             FV_STAGE_OK=1
         else
             err "FileVault не подтвердился: $(printf '%s' "$FV_ST" | head -1)."
             [ -n "$FV_ERR" ] && err "Причина: $FV_ERR"
             warn "Включи руками: Настройки -> Конфиденциальность и безопасность -> FileVault."
         fi
-        FV_ERR=""; unset FV_ERR
+        FV_ERR=""; FV_KEY=""; unset FV_ERR FV_KEY
     fi
     # Отмечаем фазу только при подтвержденном FileVault: иначе следующий
     # запуск пропустил бы незашифрованный диск.
@@ -1473,6 +1488,14 @@ if ! stage_done disk; then
     # перетывать: wait_new_disk ждет только НОВЫЙ диск и вечно молчал бы.
     PRE_MOUNTED=""
     [ "$HAVE_DISK" = "да" ] && PRE_MOUNTED=$(vc_mounted_vol 2>/dev/null || true)
+    # Защита от фазы приложений, не дошедшей до VeraCrypt (FUSE-T не встал и т.п.):
+    # без VeraCrypt и без уже смонтированного тома монтировать диск нечем —
+    # не предлагаем то, что невозможно сделать.
+    if [ "$HAVE_DISK" = "да" ] && [ -z "$PRE_MOUNTED" ] && [ ! -d "/Applications/VeraCrypt.app" ]; then
+        err "VeraCrypt не установлен — без него секретный диск не смонтировать."
+        warn "Скорее всего, в фазе приложений не встал FUSE-T. Поставь его (или VeraCrypt целиком) вручную и запусти скрипт заново."
+        exit 1
+    fi
     if [ "$HAVE_DISK" = "да" ] && [ -n "$PRE_MOUNTED" ]; then
         ok "Секретный том уже смонтирован: $PRE_MOUNTED — вставлять ничего не нужно."
         # Физический диск для UUID-сверки: берем, только если внешний ровно один.
@@ -2079,7 +2102,7 @@ echo -e "  ${BOLD}Что сделано:${NC}"
 echo "    • защита: блокировка сразу, брандмауэр+невидимость, SSH/экран/ARD выкл"
 echo "    • AirDrop/Handoff/геолокация/аналитика/Siri — выкл (каждый пункт проверен)"
 echo "    • недавние приложения в Dock скрыты"
-echo "    • FileVault: шифрование включено (ключ скриптом не показывался и не сохранялся)"
+echo "    • FileVault: шифрование включено (ключ восстановления был показан один раз в терминале, нигде не сохранен)"
 echo "    • данные приложений — на секретном диске, система смотрит на них через ссылки"
 echo "    • раскладки ABC+Русская (Ctrl+Space), часовой пояс по IP, Wi-Fi по выбору"
 echo ""
