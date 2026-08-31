@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  АВТОНАСТРОЙКА MAC — ПОЛНЫЙ АВТОМАТ (v12)
+#  АВТОНАСТРОЙКА MAC — ПОЛНЫЙ АВТОМАТ (v13)
 #  Человеку нужно только: ответить на 5 вопросов и ввести пароль
 # ============================================================
 
@@ -26,7 +26,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v12.9-2026.08.30 — умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
+readonly SCRIPT_VERSION="v13.1-2026.08.31 — геолокация по STIG (kill locationd + верификация демоном), Wi-Fi радио с фолбэком ifconfig для Tahoe, adprivacyd перезапуск после AdLib, живой URL панели Сети вместо мёртвого Network-Firewall, только Apple Silicon (Intel выпилен), поддержка macOS 14-15/26/27 (Ventura выпилена: EOL), умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 5 вопросов, верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -119,7 +119,6 @@ VC_URL="https://launchpad.net/veracrypt/trunk/1.26.29/+download/VeraCrypt_FUSE-T
 TG_URL="https://telegram.org/dl/macos/stable"
 SUBLIME_URL="https://download.sublimetext.com/sublime_text_build_4200_mac.zip"
 SPHERE_URL_ARM64="https://cdn.ls.app/ls2_1.9.9_arm64.dmg"
-SPHERE_URL_X86="https://cdn.ls.app/ls2_1.9.9_x86_64.dmg"
 TUKAN_URL="https://tukan.me/download/mac"
 MM_URL="https://updates.mailmate-app.com/archives/MailMateBeta.tbz"
 EXCEL_URL="https://go.microsoft.com/fwlink/?linkid=525135"
@@ -211,6 +210,10 @@ trap cleanup_exit EXIT
 fi  # конец блока «только реальный прогон»: в dry-run ни лока, ни caffeinate
 
 ARCH=$(uname -m)
+if [ "$ARCH" != "arm64" ]; then
+    err "Только Apple Silicon (arm64). Intel-маки больше не поддерживаются."
+    exit 1
+fi
 clear
 
 TITLE_W=$(tw)
@@ -226,13 +229,15 @@ info "$(L 'Вопросов минимум, дальше всё идет без 
 dim "$(L 'Логи не ведутся — никаких следов в системе не остается.' 'No logs are written — no traces left in the system.')"
 [ -s "$STAGE_FILE" ] && warn "$(L 'Найдены отметки прошлого прерванного прогона — завершенные фазы пропущу.' 'Found marks of an interrupted run — completed phases will be skipped.')"
 
-# Проверка версии macOS: тестирован на 13-15 (Ventura/Sonoma/Sequoia) и 26 (Tahoe).
+# Проверка версии macOS: тестирован на 14-15 (Sonoma/Sequoia), 26 (Tahoe) и 27
+# (Golden Gate). Ventura (13) выпилена: с выхода Tahoe патчей безопасности нет.
 # На других — предупреждаю, но продолжаю (вдруг повезло).
 MACOS_VER=$(sw_vers -productVersion 2>/dev/null)
 MACOS_MAJOR=${MACOS_VER%%.*}
 case "$MACOS_MAJOR" in
-    13|14|15|26) : ;;
-    *) warn "macOS $MACOS_VER не входит в тестированные (13-15, 26). Продолжаю, но смотри глазами." ;;
+    14|15|26|27) : ;;
+    13) warn "macOS 13 Ventura больше не получает обновления безопасности — обновись хотя бы до Sonoma." ;;
+    *) warn "macOS $MACOS_VER не входит в тестированные (14-15, 26, 27). Продолжаю, но смотри глазами." ;;
 esac
 
 # Автопроверка обновления скрипта на GitHub (не навязчиво: только если есть сеть)
@@ -352,13 +357,14 @@ fp_any() {
 # ------------------------------------------------------------
 # ПРЕДПОЛЕТНАЯ ПРОВЕРКА: что уже стоит и куда уже подключено
 # ------------------------------------------------------------
-APP_TELEGRAM=0; APP_SUBLIME=0; APP_SPHERE=0; APP_TUKAN=0; APP_VERACRYPT=0; APP_MAILMATE=0
+APP_TELEGRAM=0; APP_SUBLIME=0; APP_SPHERE=0; APP_TUKAN=0; APP_VERACRYPT=0; APP_MAILMATE=0; APP_QTOX=0
 [ -d "/Applications/Telegram.app" ] && APP_TELEGRAM=1
 [ -d "/Applications/Sublime Text.app" ] && APP_SUBLIME=1
 [ -n "$(find /Applications -maxdepth 1 -iname '*sphere*.app' 2>/dev/null | head -1)" ] && APP_SPHERE=1
 [ -n "$(find /Applications -maxdepth 1 -iname '*tukan*.app' 2>/dev/null | head -1)" ] && APP_TUKAN=1
 [ -d "/Applications/VeraCrypt.app" ] && APP_VERACRYPT=1
 [ -d "/Applications/MailMate.app" ] && APP_MAILMATE=1
+[ -n "$(find /Applications -maxdepth 1 -iname 'qTox.app' 2>/dev/null | head -1)" ] && APP_QTOX=1
 
 # Единый источник правды — реестр app_keys. Раньше рядом жили PRE_TG/PRE_ST/...
 # с ручным маппингом ключей на имена переменных и eval; добавление приложения
@@ -434,7 +440,7 @@ HAVE_DISK=$(yn "${HAVE_DISK:-да}")
 
 q 4 "Wi-Fi:"
 echo "   1 — удалить службу насовсем (только кабель)  [по умолчанию]"
-echo "   2 — просто выключить радио (можно включить обратно в Настройках)"
+echo "   2 — просто выключить радио, можно вернуть в Настройках (на Tahoe при ошибке скрипт сам погасит через ifconfig)"
 echo "   3 — не трогать вообще"
 read -r -p "   Выбор [1]: " WIFI_MODE
 WIFI_MODE=${WIFI_MODE:-1}
@@ -588,8 +594,9 @@ if ! stage_done hardening; then
     if as_root "$SOCKETFW" --getglobalstate 2>/dev/null | grep -qi enabled; then
         ok "Брандмауэр включен (подтверждено)."
     else
-        warn "Не включился из терминала — включу через Настройки."
-        open "x-apple.systempreferences:com.apple.Network-Firewall" 2>/dev/null
+        warn "Не включился из терминала — открыл Сеть, включи Брандмауэр тумблером."
+        # com.apple.Network-Firewall мёртв с Ventura; живой путь — Network-Settings
+        open "x-apple.systempreferences:com.apple.Network-Settings.extension" 2>/dev/null
         FW_MANUAL=1
     fi
     if [ "$FW_MANUAL" = "0" ]; then
@@ -636,17 +643,27 @@ if ! stage_done hardening; then
     if [ "$UA" = "0" ]; then ok "Handoff выключен (подтверждено)."
     else warn "Handoff — перечитать не смог. Проверь: Настройки -> Основные -> AirDrop и Handoff."; fi
 
-    # Службы геолокации — выкл + проверка
+    # Службы геолокации — выкл + проверка.
+    # На Sequoia/Tahoe locationd держит конфиг в памяти: простая запись в plist
+    # системой игнорируется (и чтение того же файла — ложное «подтверждено»).
+    # STIG-подход для macOS 26: пишем ключ, убиваем демона (он перечитает
+    # конфиг), верифицируем глазами самого демона (от пользователя _locationd).
     as_root defaults write /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled -bool false 2>/dev/null
-    LOC=$(as_root defaults read /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled 2>/dev/null)
-    if [ "$LOC" = "0" ]; then ok "Службы геолокации выключены (подтверждено)."
-    else warn "Геолокация — перечитать не смог. Проверь: Настройки -> Конфиденциальность -> Службы геолокации."; fi
+    LOC_PID=$(as_root launchctl print system 2>/dev/null | awk '/\tcom\.apple\.locationd/ {print $1; exit}')
+    [ -n "$LOC_PID" ] && as_root kill -9 "$LOC_PID" 2>/dev/null
+    sleep 1
+    LOC=$(as_root -u _locationd defaults -currentHost read /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled 2>/dev/null)
+    if [ "$LOC" = "0" ]; then ok "Службы геолокации выключены (подтверждено демоном)."
+    else warn "Геолокация — не подтвердилось. Выключи: Настройки -> Конфиденциальность и безопасность -> Службы геолокации."; fi
 
     # Аналитика и рекламный идентификатор — выкл + проверка
     as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null
     as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist ThirdPartyDataSubmit -bool false 2>/dev/null
     defaults write com.apple.AdLib allowApplePersonalizedAdvertising -bool false
     defaults write com.apple.AdLib allowIdentifierForAdvertising -bool false
+    # adprivacyd держит значения в памяти и может откатить их обратно на диск —
+    # перезапускаем, чтобы перечитал
+    killall adprivacyd 2>/dev/null
     SUB=$(as_root defaults read /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit 2>/dev/null)
     if [ "$SUB" = "0" ]; then ok "Аналитика Apple и рекламный идентификатор выключены (подтверждено)."
     else warn "Аналитика — перечитать не смог. Проверь: Настройки -> Конфиденциальность -> Аналитика."; fi
@@ -762,7 +779,22 @@ if ! stage_done radio; then
         2)
             if [ -n "$WIFI_DEV" ]; then
                 as_root networksetup -setairportpower "$WIFI_DEV" off 2>/dev/null
-                ok "Wi-Fi выключен (радио, $WIFI_DEV). Включить обратно: Настройки -> Wi-Fi."
+                sleep 1
+                if networksetup -getairportpower "$WIFI_DEV" 2>/dev/null | grep -qi ": Off"; then
+                    ok "Wi-Fi выключен (радио, $WIFI_DEV). Включить обратно: Настройки -> Wi-Fi."
+                else
+                    # На Tahoe setairportpower иногда падает с «all AirPort network
+                    # services are disabled» — гасим интерфейс на уровне ядра.
+                    # Оговорка: configd может поднять его обратно позже — это
+                    # разовое гашение, а не постоянная настройка.
+                    as_root ifconfig "$WIFI_DEV" down 2>/dev/null
+                    sleep 1
+                    if ! ifconfig "$WIFI_DEV" 2>/dev/null | grep -q "<UP[,>]"; then
+                        ok "Wi-Fi погашен через ifconfig ($WIFI_DEV, интерфейс down). Включить: sudo ifconfig $WIFI_DEV up."
+                    else
+                        warn "Wi-Fi не погас ни так, ни так — выключи радио руками: Настройки -> Wi-Fi."
+                    fi
+                fi
             else
                 warn "Wi-Fi устройство не нашел — выключи радио руками: Настройки -> Wi-Fi."
             fi
@@ -958,13 +990,9 @@ fetch() { # fetch <url> <файл> [имя] [мин_размер] [запасн�
 }
 
 install_dmg() {
-    local url="$1" name="$2" tmp alt=""
+    local url="$1" name="$2" tmp
     tmp="/tmp/$name.dmg"
-    # Для Sphere запасная попытка — сборка под ДРУГУЮ архитектуру
-    if [ "$name" = "Sphere" ]; then
-        if [ "$ARCH" = "arm64" ]; then alt="$SPHERE_URL_X86"; else alt="$SPHERE_URL_ARM64"; fi
-    fi
-    fetch "$url" "$tmp" "$name" "$FETCH_MIN_SIZE" "$alt" || return 1
+    fetch "$url" "$tmp" "$name" "$FETCH_MIN_SIZE" || return 1
     local mp
     mp=$(hdiutil attach "$tmp" -nobrowse -quiet 2>/dev/null | grep -o '/Volumes/.*' | head -1)
     if [ -z "$mp" ]; then err "$name: dmg не смонтировался."; rm -f "$tmp"; return 1; fi
@@ -1037,8 +1065,7 @@ if ! stage_done apps; then
 
     if ! app_installed sphere; then
         info "Linken Sphere — ставлю."
-        SPHERE_URL="$SPHERE_URL_X86"; [ "$ARCH" = "arm64" ] && SPHERE_URL="$SPHERE_URL_ARM64"
-        install_dmg "$SPHERE_URL" "Sphere" && verify_app "Linken Sphere" "*sphere*"
+        install_dmg "$SPHERE_URL_ARM64" "Sphere" && verify_app "Linken Sphere" "*sphere*"
     else
         ok "Linken Sphere уже стоит."
     fi
@@ -1068,14 +1095,9 @@ if ! stage_done apps; then
         QTOX_URL=""
         LATEST_JSON=$(curl -s --max-time 10 "https://api.github.com/repos/TokTok/qTox/releases/latest" 2>/dev/null)
         if [ -n "$LATEST_JSON" ]; then
-            if [ "$ARCH" = "arm64" ]; then
-                QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*arm64\.dmg' | head -1)
-                [ -z "$QTOX_URL" ] && QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*mac[^"]*\.dmg' | head -1)
-                [ -z "$QTOX_URL" ] && QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*qtox[^"]*\.dmg' | head -1)
-            else
-                QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*x86_64\.dmg' | head -1)
-                [ -z "$QTOX_URL" ] && QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*mac[^"]*\.dmg' | head -1)
-            fi
+            QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*arm64\.dmg' | head -1)
+            [ -z "$QTOX_URL" ] && QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*mac[^"]*\.dmg' | head -1)
+            [ -z "$QTOX_URL" ] && QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*qtox[^"]*\.dmg' | head -1)
         fi
         if [ -n "$QTOX_URL" ]; then
             install_dmg "$QTOX_URL" "qTox" && verify_app "qTox" "*tox*"
@@ -1156,6 +1178,7 @@ if ! stage_done apps; then
                 ok "Текстовые расширения -> Sublime Text: все $EXT_OK подтверждены."
             else
                 warn "Расширения: подтверждено $EXT_OK из $TOT. Не встали:$EXT_FAIL — в Finder: правой кнопкой -> Открыть в программе -> Sublime Text -> «Всегда»."
+                dim "На Tahoe launchservicesd кэширует ассоциации: записанные могут подхватиться только после перезагрузки."
             fi
         fi
     fi
@@ -1554,7 +1577,7 @@ link_to() {
     local src="$1" dst="$2" fpkey="$3" dst_n src_n
     [ -L "$src" ] && { local cur; cur=$(readlink "$src"); [ "$cur" = "$dst" ] && return 0; rm -f "$src" 2>/dev/null; }
     mkdir -p "$(dirname "$src")" 2>/dev/null
-    if [ -e "$src" ] || [ -d "$src" ]; then
+    if [ -e "$src" ]; then
         dst_n=0; src_n=0
         [ -d "$dst" ] && dst_n=$(ls -A "$dst" 2>/dev/null | wc -l | tr -d ' ')
         src_n=$(ls -A "$src" 2>/dev/null | wc -l | tr -d ' ')
@@ -1725,11 +1748,10 @@ if ! stage_done data; then
         if app_installed "$key"; then
             info "$lbl: данных нет — запускаю приложение, чтобы создало свою папку..."
             APP_MATCH=$(find /Applications -maxdepth 1 -iname "$(app_bundle "$key").app" 2>/dev/null | head -1)
-            if [ "$ARCH" = "arm64" ]; then
-                APP_BIN=$(find "$APP_MATCH/Contents/MacOS" -type f 2>/dev/null | head -1)
-                if [ -n "$APP_BIN" ] && ! lipo -archs "$APP_BIN" 2>/dev/null | grep -q arm64; then
-                    as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
-                fi
+            # На Apple Silicon приложению без arm64-среза нужна Rosetta — ставим
+            APP_BIN=$(find "$APP_MATCH/Contents/MacOS" -type f 2>/dev/null | head -1)
+            if [ -n "$APP_BIN" ] && ! lipo -archs "$APP_BIN" 2>/dev/null | grep -q arm64; then
+                as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
             fi
             xattr -dr com.apple.quarantine "$APP_MATCH" 2>/dev/null
             # Bundle ID вместо имени: pkill -f "Sublime Text" — подстрочный матч

@@ -3,7 +3,7 @@
 **One-shot macOS setup & hardening** — от чистой системы до боевой машины за один прогон.
 Учётка, защита, приложения, FileVault, шифрованный том VeraCrypt с данными, самопроверка.
 
-![macOS](https://img.shields.io/badge/macOS-13–15%20·%2026-black) ![bash](https://img.shields.io/badge/bash-3.2%2B-green) ![license](https://img.shields.io/badge/license-private-red) ![version](https://img.shields.io/badge/version-12.8-blue)
+![macOS](https://img.shields.io/badge/macOS-14–15%20·%2026%20·%2027-black) ![bash](https://img.shields.io/badge/bash-3.2%2B-green) ![license](https://img.shields.io/badge/license-private-red) ![version](https://img.shields.io/badge/version-13.1-blue)
 
 ## Запуск — одна строка из Терминала
 
@@ -34,8 +34,8 @@ curl -fsSL https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main/Di
 
 - **5 вопросов** — учётка, пароль админа, диск уже зашифрован?, Wi-Fi, доп. программы (MailMate / qTox / Excel). Всё остальное молча.
 - **Учётка** — отдельная рабочая без прав админа (каждый шаг dscl проверяется).
-- **Харднинг с верификацией** — блокировка сразу, брандмауэр+stealth, глушатся SSH / экран / ARD / Remote Apple Events / принтеры / быстрое переключение, выкл AirDrop / Handoff / геолокация / аналитика / Siri / подсказки Spotlight, скрыты «недавние» в Dock, Finder показывает ВСЕ расширения, иконки внешних дисков скрыты, проверены Gatekeeper/SIP, время с time.apple.com.
-- **Wi-Fi** — удалить насовсем (только кабель) / выключить радио / не трогать.
+- **Харднинг с верификацией** — блокировка сразу, брандмауэр+stealth, глушатся SSH / экран / ARD / Remote Apple Events / принтеры / быстрое переключение, выкл AirDrop / Handoff / геолокация (по STIG: ключ + перезапуск locationd + проверка от его имени) / аналитика (с перезапуском adprivacyd) / Siri / подсказки Spotlight, скрыты «недавние» в Dock, Finder показывает ВСЕ расширения, иконки внешних дисков скрыты, проверены Gatekeeper/SIP, время с time.apple.com.
+- **Wi-Fi** — удалить насовсем (только кабель) / выключить радио (с фолбэком `ifconfig down` на Tahoe) / не трогать.
 - **Bluetooth** — открывается панель (без сторонних утилит); выключать, только если нет беспроводных клавы/мыши.
 - **Приложения** — Telegram, Sublime Text, Linken Sphere 2, Tukan (+ по выбору MailMate, qTox, Excel). Прогресс-бар, 3 попытки, каждая установка проверяется.
 - **Текстовые расширения → Sublime** — прямая запись в LaunchServices secure plist (все расширения из конфига), с проверкой каждого.
@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main/Di
 
 ## Требования
 
-- macOS 13–15 (Ventura / Sonoma / Sequoia) или 26 (Tahoe), Apple Silicon или Intel
+- macOS 14–15 (Sonoma / Sequoia), 26 (Tahoe) или 27 (Golden Gate), только Apple Silicon. Ventura (13) не поддерживается — обновлений безопасности для неё больше нет
 - Интернет по кабелю; VPN на роутере/Raspberry Pi — по желанию
 - Внешний диск/флешка под VeraCrypt (VeraCrypt и FUSE-T ставятся скриптом)
 
