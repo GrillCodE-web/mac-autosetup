@@ -116,7 +116,10 @@ CONFIG_DEFAULTS=$(cat <<'EOF'
 # Автоконфиг скрипта настройки. Создан самим скриптом, удаляется после прогона.
 # Править можно между запусками; если удалить — создастся заново с дефолтами.
 FUSET_URL="https://github.com/macos-fuse-t/fuse-t/releases/download/1.2.7/fuse-t-macos-installer-1.2.7.pkg"
-VC_URL="https://launchpad.net/veracrypt/trunk/1.26.29/+download/VeraCrypt_FUSE-T_1.26.29.dmg"
+# Основной источник — GitHub-релизы VeraCrypt: launchpadlibrarian.net (CDN
+# launchpad.net) из части сетей просто недоступен (curl 28, таймаут 15 сек x3).
+VC_URL="https://github.com/veracrypt/VeraCrypt/releases/download/VeraCrypt_1.26.29/VeraCrypt_FUSE-T_1.26.29.dmg"
+VC_URL_ALT="https://launchpad.net/veracrypt/trunk/1.26.29/+download/VeraCrypt_FUSE-T_1.26.29.dmg"
 TG_URL="https://telegram.org/dl/macos/stable"
 SUBLIME_URL="https://download.sublimetext.com/sublime_text_build_4200_mac.zip"
 SPHERE_URL_ARM64="https://cdn.ls.app/ls2_1.9.9_arm64.dmg"
@@ -1040,15 +1043,19 @@ fetch() { # fetch <url> <файл> [имя] [мин_размер] [запасн�
     return 1
 }
 
-install_dmg() {
-    local url="$1" name="$2" tmp mp dmg_try
+install_dmg() { # install_dmg <url> <имя> [запасной_url]
+    local url="$1" name="$2" alt="${3:-}" tmp mp dmg_try cur
     tmp="/tmp/$name.dmg"
     mp=""
     # На медленном канале обрыв ответа без Content-Length проходит мимо curl и
     # проверки размера: файл есть, а dmg битый. Валидируем образ ДО монтирования
-    # (imageinfo читает только заголовок — быстро) и даем вторую попытку качнуть.
+    # (imageinfo читает только заголовок — быстро). Второй проход (если задан)
+    # идет по ЗАПАСНОМУ источнику — другой хост может быть доступен, когда
+    # основной лежит/заблокирован (так было с launchpadlibrarian.net).
     for dmg_try in 1 2; do
-        fetch "$url" "$tmp" "$name" "$FETCH_MIN_SIZE" || return 1
+        cur="$url"
+        [ "$dmg_try" = "2" ] && [ -n "$alt" ] && { cur="$alt"; info "$name: пробую запасной источник."; }
+        fetch "$cur" "$tmp" "$name" "$FETCH_MIN_SIZE" || { [ "$dmg_try" = "1" ] && [ -n "$alt" ] && continue; return 1; }
         if ! hdiutil imageinfo "$tmp" >/dev/null 2>&1; then
             err "$name: скачался битый dmg (обрыв на медленном канале?)."
             rm -f "$tmp"; sleep 3; continue
@@ -1267,7 +1274,8 @@ if ! stage_done apps; then
     fi
     if [ "$APP_VERACRYPT" = "0" ]; then
         info "VeraCrypt — ставлю."
-        install_dmg "$VC_URL" "VeraCrypt" && verify_app VeraCrypt VeraCrypt
+        install_dmg "$VC_URL" "VeraCrypt" "$VC_URL_ALT"
+        verify_app VeraCrypt VeraCrypt || true
         if [ -d "/Applications/VeraCrypt.app" ]; then
             warn "Если при запуске VeraCrypt попросит разрешить системное расширение:"
             warn "  Настройки -> Основные -> Элементы входа и расширения -> Расширения -> Драйверы -> FUSE-T."
@@ -1511,7 +1519,8 @@ if ! stage_done disk; then
             pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t" && ok "FUSE-T установлен." \
                 || warn "FUSE-T не подтвердился — VeraCrypt может не увидеть диск."
         fi
-        install_dmg "$VC_URL" "VeraCrypt" && verify_app VeraCrypt VeraCrypt
+        install_dmg "$VC_URL" "VeraCrypt" "$VC_URL_ALT"
+        verify_app VeraCrypt VeraCrypt || true
         if [ ! -d "/Applications/VeraCrypt.app" ]; then
             err "VeraCrypt так и не встал — без него секретный диск не подключить."
             exit 1
