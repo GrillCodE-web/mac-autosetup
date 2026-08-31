@@ -201,6 +201,9 @@ caffeinate -dimsu &
 CAFFEINATE_PID=$!
 cleanup_exit() {
     kill "$CAFFEINATE_PID" 2>/dev/null
+    # wait съедает job-уведомление «Terminated: 15 caffeinate» — без него shell
+    # печатал эту строку в терминал при каждом выходе из скрипта.
+    wait "$CAFFEINATE_PID" 2>/dev/null
     # Конфиг с ответами стираю ТОЛЬКО при полном успехе (фаза данных отмечена):
     # если прогон упал — ответы не спрашиваются заново при перезапуске.
     if stage_done data; then rm -f "$CONFIG_FILE"; fi
@@ -1294,7 +1297,15 @@ if ! stage_done apps; then
         warn "В Программах и «Linken Sphere», и «Linken Sphere 2». Рабочая — 2. Старую НЕ трогаю (вдруг нужна) — удали руками, если точно не нужна."
     fi
     ding_subtle
-    stage_mark apps
+    # Фазу помечаем завершенной, только если VeraCrypt и FUSE-T на месте: они
+    # обязательны для фазы диска. Не встали — отметку не ставим, и следующий
+    # запуск вернется в эту фазу и доустановит (все остальное быстро
+    # пропустится по «уже стоит»).
+    if [ -d "/Applications/VeraCrypt.app" ] && pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
+        stage_mark apps
+    else
+        warn "VeraCrypt/FUSE-T не подтвердились — фазу приложений НЕ помечаю завершенной: следующий запуск доустановит."
+    fi
     phase_end "Установка приложений"
 fi
 
@@ -1488,13 +1499,23 @@ if ! stage_done disk; then
     # перетывать: wait_new_disk ждет только НОВЫЙ диск и вечно молчал бы.
     PRE_MOUNTED=""
     [ "$HAVE_DISK" = "да" ] && PRE_MOUNTED=$(vc_mounted_vol 2>/dev/null || true)
-    # Защита от фазы приложений, не дошедшей до VeraCrypt (FUSE-T не встал и т.п.):
-    # без VeraCrypt и без уже смонтированного тома монтировать диск нечем —
-    # не предлагаем то, что невозможно сделать.
-    if [ "$HAVE_DISK" = "да" ] && [ -z "$PRE_MOUNTED" ] && [ ! -d "/Applications/VeraCrypt.app" ]; then
-        err "VeraCrypt не установлен — без него секретный диск не смонтировать."
-        warn "Скорее всего, в фазе приложений не встал FUSE-T. Поставь его (или VeraCrypt целиком) вручную и запусти скрипт заново."
-        exit 1
+    # VeraCrypt обязателен для обеих веток (подключить готовый диск или
+    # зашифровать новый). Фаза приложений могла быть помечена завершенной, не
+    # дойдя до него (не встал FUSE-T на медленном канале и т.п.) — тогда
+    # доставляем прямо здесь сами, а не отправляем пользователя ставить руками.
+    # Исключение: том уже смонтирован — тогда VC не нужен вовсе.
+    if [ -z "$PRE_MOUNTED" ] && [ ! -d "/Applications/VeraCrypt.app" ]; then
+        warn "VeraCrypt не установлен (фаза приложений до него не дошла) — доставляю сейчас."
+        if ! pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
+            install_pkg_url "$FUSET_URL" "fuse-t" || true
+            pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t" && ok "FUSE-T установлен." \
+                || warn "FUSE-T не подтвердился — VeraCrypt может не увидеть диск."
+        fi
+        install_dmg "$VC_URL" "VeraCrypt" && verify_app VeraCrypt VeraCrypt
+        if [ ! -d "/Applications/VeraCrypt.app" ]; then
+            err "VeraCrypt так и не встал — без него секретный диск не подключить."
+            exit 1
+        fi
     fi
     if [ "$HAVE_DISK" = "да" ] && [ -n "$PRE_MOUNTED" ]; then
         ok "Секретный том уже смонтирован: $PRE_MOUNTED — вставлять ничего не нужно."
