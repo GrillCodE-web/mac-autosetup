@@ -606,22 +606,27 @@ if ! stage_done hardening; then
         FW_MANUAL=1
     fi
     if [ "$FW_MANUAL" = "0" ]; then
-        as_root "$SOCKETFW" --setstealthmode on >/dev/null 2>&1
-        sleep 1
-        # CLI-вывод иногда запаздывает/меняет формат между версиями macOS —
-        # даем 3 попытки, а потом сверяемся с plist, куда настройка пишется сразу.
+        # Ставим и проверяем в цикле: ALF-демон применяет настройку асинхронно,
+        # а формат --getstealthmode гуляет между версиями macOS (в Tahoe это
+        # "Stealth Mode = On" — слова enabled там нет, старый grep его не видел).
+        # Источник истины — com.apple.alf.plist, читаем его двумя путями.
         STEALTH_OK=0
-        for _i in 1 2 3; do
-            as_root "$SOCKETFW" --getstealthmode 2>/dev/null | grep -qi enabled && { STEALTH_OK=1; break; }
+        STEALTH_RAW=""
+        for _i in 1 2 3 4; do
+            as_root "$SOCKETFW" --setstealthmode on >/dev/null 2>&1
             sleep 2
+            STEALTH_RAW=$(as_root "$SOCKETFW" --getstealthmode 2>/dev/null)
+            printf '%s' "$STEALTH_RAW" | grep -qiE "enabled|mode.*on" && { STEALTH_OK=1; break; }
+            if [ "$(as_root /usr/libexec/PlistBuddy -c "Print :stealthenabled" /Library/Preferences/com.apple.alf.plist 2>/dev/null)" = "1" ] \
+            || [ "$(as_root defaults read /Library/Preferences/com.apple.alf stealthenabled 2>/dev/null)" = "1" ]; then
+                STEALTH_OK=1; break
+            fi
         done
-        if [ "$STEALTH_OK" = "0" ]; then
-            [ "$(as_root /usr/libexec/PlistBuddy -c "Print :stealthenabled" /Library/Preferences/com.apple.alf.plist 2>/dev/null)" = "1" ] && STEALTH_OK=1
-        fi
         if [ "$STEALTH_OK" = "1" ]; then
             ok "Режим невидимости включен (подтверждено)."
         else
             warn "Невидимость не подтвердилась: Настройки -> Сеть -> Брандмауэр -> Параметры."
+            [ -n "$STEALTH_RAW" ] && dim "socketfilterfw ответил: $STEALTH_RAW"
             FW_MANUAL=1
         fi
     fi
@@ -822,13 +827,14 @@ if ! stage_done radio; then
 
     # Часовой пояс — молча по IP. Не определился — не трогаю, без вопросов.
     info "Определяю часовой пояс по IP..."
-    TZ_ZONE=$(curl -s --max-time 8 https://ipapi.co/timezone 2>/dev/null)
-    case "$TZ_ZONE" in Europe/*|Asia/*|Africa/*|America/*|Australia/*|Pacific/*) ;; *) TZ_ZONE="" ;; esac
-    if [ -z "$TZ_ZONE" ]; then
-        # Фолбэк: ipapi.co иногда молчит (лимиты/VPN/блокировка) — пробуем worldtimeapi.
-        TZ_ZONE=$(curl -s --max-time 8 https://worldtimeapi.org/api/ip 2>/dev/null | sed -n 's/.*"timezone"[": ]*"\([^"]*\)".*/\1/p')
-        case "$TZ_ZONE" in Europe/*|Asia/*|Africa/*|America/*|Australia/*|Pacific/*) ;; *) TZ_ZONE="" ;; esac
-    fi
+    # ipapi.co на бесплатном тарифе часто отвечает 429 RateLimited (подтверждено
+    # прогоном), а worldtimeapi.org просто лежал. Идем по двум независимым
+    # источникам — оба отдают зону IANA чистым текстом.
+    TZ_ZONE=""
+    for TZ_URL in https://ipapi.co/timezone https://ipinfo.io/timezone; do
+        TZ_ZONE=$(curl -s --max-time 8 "$TZ_URL" 2>/dev/null | tr -d '[:space:]')
+        case "$TZ_ZONE" in Europe/*|Asia/*|Africa/*|America/*|Australia/*|Pacific/*) break ;; *) TZ_ZONE="" ;; esac
+    done
     if [ -n "$TZ_ZONE" ]; then
         as_root systemsetup -settimezone "$TZ_ZONE" 2>/dev/null
         readlink /etc/localtime 2>/dev/null | grep -q "$TZ_ZONE" \
@@ -927,7 +933,17 @@ fi
 # ------------------------------------------------------------
 # ФАЗА 3: УСТАНОВКА ПРИЛОЖЕНИЙ (скачал -> поставил -> ПРОВЕРИЛ)
 # ------------------------------------------------------------
-net_ok()  { curl -s --max-time 5 https://github.com >/dev/null 2>&1; }
+# Одиночный curl на github.com давал ложный «нет интернета» при мигании сети —
+# прогон падал в фазе диска. Пробуем несколько независимых хостов, по 2 попытки.
+net_ok() {
+    local u i
+    for u in https://github.com https://www.apple.com https://cloudflare.com; do
+        for i in 1 2; do
+            curl -s --max-time 5 "$u" >/dev/null 2>&1 && return 0
+        done
+    done
+    return 1
+}
 net_speed() { # скорость в БАЙТАХ/с (так отдает curl speed_download)
     local bps
     # LC_ALL=C: в локали с десятичной запятой curl отдает "1234,5", и отсечение
@@ -1423,7 +1439,9 @@ wait_vc_mount() {
 if ! stage_done disk; then
     step "СЕКРЕТНЫЙ ДИСК / ENCRYPTED DISK" "5/6"
     phase_begin
-    if ! net_ok; then err "Нет интернета — без него приложения не скачать. Подключи сеть и запусти заново."; exit 1; fi
+    # Раньше тут был жесткий exit 1 при единичном флаке сети — теперь терпеливо
+    # ждем возвращения интернета, как это делает фаза 3 (net_wait).
+    net_wait
 
     DISK_DEV=""
     BEFORE_PLUG=$(list_external)
