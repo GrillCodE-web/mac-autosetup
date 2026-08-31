@@ -972,6 +972,11 @@ net_wait() {
 
 app_installed() { [ -n "$(find /Applications -maxdepth 1 -iname "$(app_bundle "$1").app" 2>/dev/null | head -1)" ]; }
 
+# lipo — инструмент Xcode CLT: на чистой системе его вызов выносит диалог
+# «The "lipo" command requires the command line developer tools» и качалку на
+# несколько ГБ. /usr/bin/file есть в базовой macOS и архитектуры показывает так же.
+bin_archs() { /usr/bin/file "$1" 2>/dev/null | grep -oE 'arm64|x86_64|i386' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+
 # Проверка после установки: бандл есть, Info.plist читается, архитектура совпадает
 verify_app() {
     local label="$1" pattern="$2" app bin archs
@@ -982,7 +987,7 @@ verify_app() {
     fi
     bin="$app/Contents/MacOS/$(defaults read "$app/Contents/Info" CFBundleExecutable 2>/dev/null)"
     if [ -f "$bin" ]; then
-        archs=$(lipo -archs "$bin" 2>/dev/null)
+        archs=$(bin_archs "$bin")
         if [ -n "$archs" ] && ! printf '%s' "$archs" | grep -q "$ARCH"; then
             warn "$label: стоит, но архитектура ($archs) не под $ARCH — может работать через Rosetta."
             return 0
@@ -1033,12 +1038,28 @@ fetch() { # fetch <url> <файл> [имя] [мин_размер] [запасн�
 }
 
 install_dmg() {
-    local url="$1" name="$2" tmp
+    local url="$1" name="$2" tmp mp dmg_try
     tmp="/tmp/$name.dmg"
-    fetch "$url" "$tmp" "$name" "$FETCH_MIN_SIZE" || return 1
-    local mp
-    mp=$(hdiutil attach "$tmp" -nobrowse -quiet 2>/dev/null | grep -o '/Volumes/.*' | head -1)
-    if [ -z "$mp" ]; then err "$name: dmg не смонтировался."; rm -f "$tmp"; return 1; fi
+    mp=""
+    # На медленном канале обрыв ответа без Content-Length проходит мимо curl и
+    # проверки размера: файл есть, а dmg битый. Валидируем образ ДО монтирования
+    # (imageinfo читает только заголовок — быстро) и даем вторую попытку качнуть.
+    for dmg_try in 1 2; do
+        fetch "$url" "$tmp" "$name" "$FETCH_MIN_SIZE" || return 1
+        if ! hdiutil imageinfo "$tmp" >/dev/null 2>&1; then
+            err "$name: скачался битый dmg (обрыв на медленном канале?)."
+            rm -f "$tmp"; sleep 3; continue
+        fi
+        # yes| — отвечаем «y» на лицензионное соглашение (SLA), вшитое в dmg:
+        # без ответа hdiutil на неинтерактивном вводе молча отваливается.
+        # Ошибку hdiutil печатаем — иначе следующий «не смонтировался» слепой.
+        mp=$(yes | hdiutil attach "$tmp" -nobrowse 2>/tmp/.hdi_err.$$ | grep -o '/Volumes/.*' | head -1)
+        if [ -n "$mp" ]; then rm -f /tmp/.hdi_err.$$; break; fi
+        err "$name: dmg не смонтировался."
+        [ -s /tmp/.hdi_err.$$ ] && dim "hdiutil: $(tail -1 /tmp/.hdi_err.$$)"
+        rm -f "$tmp" /tmp/.hdi_err.$$; sleep 3
+    done
+    [ -z "$mp" ] && { rm -f "$tmp"; return 1; }
     local tapp
     tapp=$(find "$mp" -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
     if [ -n "$tapp" ]; then
@@ -1142,11 +1163,14 @@ if ! stage_done apps; then
             [ -z "$QTOX_URL" ] && QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*mac[^"]*\.dmg' | head -1)
             [ -z "$QTOX_URL" ] && QTOX_URL=$(printf '%s' "$LATEST_JSON" | grep -o 'https://[^"]*qtox[^"]*\.dmg' | head -1)
         fi
-        if [ -n "$QTOX_URL" ]; then
-            install_dmg "$QTOX_URL" "qTox" && verify_app "qTox" "*tox*"
-        else
-            err "qTox: не смог получить ссылку из GitHub API. Ставь вручную: https://qtox.github.io"
+        if [ -z "$QTOX_URL" ]; then
+            # API анонимно дает 60 запросов/час на IP — при лимите (или недоступности
+            # API) уходим на прямой редирект latest/download, он API не требует.
+            QTOX_URL="https://github.com/TokTok/qTox/releases/latest/download/qTox-arm64.dmg"
+            dim "GitHub API не ответил — беру прямую ссылку на последний релиз."
         fi
+        install_dmg "$QTOX_URL" "qTox" && verify_app "qTox" "*tox*" \
+            || err "qTox: не поставился. Ставь вручную: https://qtox.github.io"
     fi
     step_prog "qTox"
 
@@ -1819,10 +1843,13 @@ if ! stage_done data; then
         if app_installed "$key"; then
             info "$lbl: данных нет — запускаю приложение, чтобы создало свою папку..."
             APP_MATCH=$(find /Applications -maxdepth 1 -iname "$(app_bundle "$key").app" 2>/dev/null | head -1)
-            # На Apple Silicon приложению без arm64-среза нужна Rosetta — ставим
+            # На Apple Silicon приложению без arm64-среза нужна Rosetta — ставим.
+            # lipo тут нельзя: это CLT-стаб (см. bin_archs). Rosetta ставим только
+            # если её реально нет — проверка arch -x86_64, а не слепой softwareupdate.
             APP_BIN=$(find "$APP_MATCH/Contents/MacOS" -type f 2>/dev/null | head -1)
-            if [ -n "$APP_BIN" ] && ! lipo -archs "$APP_BIN" 2>/dev/null | grep -q arm64; then
-                as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
+            if [ -n "$APP_BIN" ] && ! bin_archs "$APP_BIN" | grep -q arm64; then
+                /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null \
+                    || as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
             fi
             xattr -dr com.apple.quarantine "$APP_MATCH" 2>/dev/null
             # Bundle ID вместо имени: pkill -f "Sublime Text" — подстрочный матч
