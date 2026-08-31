@@ -1426,6 +1426,24 @@ wait_new_disk() {
     return 1
 }
 
+# Все тома в /Volumes, у которых хост-устройство — ВНЕШНИЙ физический диск.
+# Это покрывает случай, когда диск вставлен, том смонтирован, а
+# diskutil list external physical его не видит (USB-хабы/переходники —
+# чип моста не всегда отдает корректный флаг external). Имена томов
+# не сравниваем нигде — только физика.
+external_mounted_vols() {
+    local v hd
+    for v in /Volumes/*; do
+        [ -d "$v" ] || continue
+        [ -L "$v" ] && continue
+        hd=$(diskutil info "$v" 2>/dev/null | awk -F': *' '/Part of Whole/ {print $2; exit}')
+        [ -n "$hd" ] || continue
+        diskutil info "$hd" 2>/dev/null | grep -qi "Protocol:.*USB" \
+            && diskutil info "$hd" 2>/dev/null | grep -qi "Device Location:.*External" \
+            && echo "$hd"
+    done | sort -u
+}
+
 # Том, смонтированный VeraCrypt: сперва спрашиваем сам VeraCrypt (VC --list),
 # только потом — скан кандидатов в /Volumes
 vc_mounted_vol() {
@@ -1534,7 +1552,24 @@ if ! stage_done disk; then
             DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || {
                 err "Не увидел новый диск за $DISK_WAIT_SEC сек."
                 warn "Если диск УЖЕ был вставлен — вынь и вставь еще раз. Смотрю еще $DISK_WAIT_SEC сек..."
-                DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || { err "Диск не найден. Разберись с диском и запусти скрипт заново."; exit 1; }
+                DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || {
+                    # Последний шанс: USB-хабы/переходники не всегда отдают
+                    # корректный флаг external — ищем по смонтированным томам
+                    # на USB-дисках. Диагностику печатаем, чтобы не гадать.
+                    err "diskutil диск не видит. Диагностика:"
+                    dim "$(diskutil list external 2>/dev/null | head -8)"
+                    DISK_DEV=$(external_mounted_vols)
+                    N_EMV=$(printf '%s\n' "$DISK_DEV" | grep -c . || true)
+                    if [ "$N_EMV" = "1" ]; then
+                        info "Нашел по смонтированному тому на USB-диске: /dev/$DISK_DEV"
+                    elif [ "${N_EMV:-0}" -gt 1 ]; then
+                        err "Вижу несколько USB-дисков с томами — оставь только секретный и запусти заново."
+                        exit 1
+                    else
+                        err "Диск не найден никаким способом. Проверь: виден ли он в Дисковой утилите (diskutil list), попробуй другой порт/кабель напрямую без хаба."
+                        exit 1
+                    fi
+                }
             }
         fi
     else
