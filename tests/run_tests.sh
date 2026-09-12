@@ -21,6 +21,81 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 TARGET="$SCRIPT_DIR/../MacForge.command"
 [ -f "$TARGET" ] || { echo "не найден $TARGET"; exit 1; }
 
+if [ "${1:-}" = "--keyboard" ]; then
+    node - "$TARGET" <<'KEYBOARD_TEST'
+const fs = require('fs'), assert = require('assert'), cp = require('child_process');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const code = source.match(/^    kb_configure_hotkeys\(\) \([\s\S]*?^    \)/m);
+assert(code, 'Не найдена функция настройки клавиатуры');
+const gate = source.match(/^    KB_STAGE_OK=0[\s\S]*?^    phase_end "Клавиатура"/m);
+assert(gate, 'Не найдена проверка этапа клавиатуры');
+const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash';
+const mocks = String.raw`
+set -u
+LOG=$(mktemp); trap 'rm -f "$LOG"' EXIT
+HOME=/nonexistent-macforge-test-home
+plutil() { :; }
+defaults() {
+    printf '%s\n' "$*" >> "$LOG"
+    [ "$2" = com.apple.symbolichotkeys ] || return 99
+    [ "$1" != import ] || [ "$MODE" != import_error ] || return 1
+    case "$3" in */read.plist) [ "$MODE" != export_error ] || return 1 ;; esac
+    return 0
+}
+/usr/libexec/PlistBuddy() {
+    printf '%s\n' "$2" >> "$LOG"
+    case "$2" in
+        'Print :AppleSymbolicHotKeys') [ "$MODE" != no_parent ]; return $? ;;
+        Add*) [ "$MODE" != write_error ]; return $? ;;
+        Delete*) return 0 ;;
+    esac
+    [ "$MODE" != read_error ] || return 1
+    case "$2" in
+        *:60:enabled) [ "$CHOICE" = 4 ] && echo false || echo true ;;
+        *:61:enabled) echo false ;;
+        *:64:enabled) echo true ;;
+        *:type) echo standard ;;
+        *:parameters:0) echo 32 ;;
+        *:parameters:1) echo 49 ;;
+        *:64:value:parameters:2) echo 1310720 ;;
+        *:60:value:parameters:2) [ "$MODE" = mismatch ] && echo 0 || echo "$MOD" ;;
+        *) return 1 ;;
+    esac
+}
+`;
+let count = 0;
+function run(choice, mode, mod, success) {
+    const input = mocks + '\n' + code[0] + '\n' + String.raw`
+kb_configure_hotkeys "$CHOICE"; rc=$?
+printf 'RC=%s\n' "$rc"
+while IFS= read -r line; do printf '%s\n' "$line"; done < "$LOG"
+KB_INPUT_OK=1; KB_CH=$CHOICE; KB_KEY=test; KB_SH_OK=0
+[ "$rc" = 0 ] && KB_SH_OK=1
+KB_SRCS='"KeyboardLayout Name" = ABC; RussianWin'
+ok() { :; }; dim() { :; }; warn() { :; }; open() { :; }; pause() { :; }
+stage_mark() { printf 'MARK=%s\n' "$1"; }; phase_end() { :; }
+` + gate[0];
+    const result = cp.spawnSync(bash, ['-s'], { input, encoding: 'utf8', env: { ...process.env, CHOICE: String(choice), MODE: mode, MOD: String(mod) } });
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(result.stdout.includes('RC=0\n'), success, result.stdout);
+    assert.strictEqual(result.stdout.includes('MARK=keyboard'), success, result.stdout);
+    if (success && choice !== 5) {
+        assert(result.stdout.includes('import com.apple.symbolichotkeys'));
+        assert(result.stdout.includes('export com.apple.symbolichotkeys'));
+        if (choice < 4) assert(result.stdout.includes('Add :AppleSymbolicHotKeys:60:value:parameters:2 integer ' + mod));
+        assert(!result.stdout.includes('Delete :AppleSymbolicHotKeys:77'));
+    }
+    if (choice === 5) assert(!result.stdout.includes('com.apple.symbolichotkeys'));
+    console.log('  ok: вариант ' + choice + ', сценарий ' + mode); count++;
+}
+for (const [choice, mod] of [[1,262144],[2,524288],[3,1048576],[4,0],[5,0]]) run(choice, 'normal', mod, true);
+run(1, 'no_parent', 262144, true);
+for (const mode of ['import_error','export_error','write_error','read_error','mismatch']) run(1, mode, 262144, false);
+console.log('Проверок клавиатуры с заглушками прошло: ' + count);
+KEYBOARD_TEST
+    exit $?
+fi
+
 if [ "${1:-}" = "--sublime" ]; then
     node - "$TARGET" <<'SUBLIME_TEST'
 const fs = require('fs');

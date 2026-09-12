@@ -916,58 +916,63 @@ if ! stage_done keyboard; then
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources:0:KeyboardLayout\ ID integer 252" "$TMPH"
     # Горячая клавиша — по выбору (вопрос 8). Модификаторы: Ctrl=262144,
     # Option=524288, Cmd=1048576. 60/61 = пред./след. источник ввода.
-    case "$KB_CH" in
-        1|2|3)
-            case "$KB_CH" in
-                1) KB_MOD=262144 ;;
-                2) KB_MOD=524288 ;;
-                3) KB_MOD=1048576 ;;
-            esac
-            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:60" "$TMPH" 2>/dev/null
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60 dict" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:enabled bool true" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value dict" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters array" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:0 integer 32" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:1 integer 49" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:parameters:2 integer $KB_MOD" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:value:type string standard" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:61" "$TMPH" 2>/dev/null
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61 dict" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61:enabled bool false" "$TMPH"
-            if [ "$KB_CH" = "3" ]; then
-                # Cmd+Space занят Spotlight (hotkey 64) — переезжает на Ctrl+Cmd+Space
-                /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:64" "$TMPH" 2>/dev/null
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64 dict" "$TMPH"
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:enabled bool true" "$TMPH"
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value dict" "$TMPH"
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters array" "$TMPH"
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters:0 integer 32" "$TMPH"
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters:1 integer 49" "$TMPH"
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:parameters:2 integer 1310720" "$TMPH"
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:64:value:type string standard" "$TMPH"
+    kb_configure_hotkeys() (
+        local choice="$1" tmp domain="com.apple.symbolichotkeys" mod id enabled ids expected key want type got
+        [ "$choice" = "5" ] && return 0
+        case "$choice" in 1) mod=262144 ;; 2) mod=524288 ;; 3) mod=1048576 ;; 4) mod=0 ;; *) return 1 ;; esac
+        tmp=$(mktemp -d "${TMPDIR:-/tmp}/macforge-hotkeys.XXXXXX") || return 1
+        trap 'rm -rf "$tmp"' EXIT
+        if ! defaults export "$domain" "$tmp/edit.plist" 2>/dev/null; then
+            if [ -e "$HOME/Library/Preferences/$domain.plist" ]; then
+                cp "$HOME/Library/Preferences/$domain.plist" "$tmp/edit.plist" || return 1
+            else
+                rm -f "$tmp/edit.plist"
+                plutil -create xml1 "$tmp/edit.plist" || return 1
             fi
-            ;;
-        4)
-            # Caps Lock — штатный механизм macOS, хоткеи 60/61 выключаем
-            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:60" "$TMPH" 2>/dev/null
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60 dict" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:60:enabled bool false" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:61" "$TMPH" 2>/dev/null
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61 dict" "$TMPH"
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:61:enabled bool false" "$TMPH"
-            ;;
-        5) : ;;  # сочетание не трогаем
-    esac
-    defaults import com.apple.HIToolbox "$TMPH" 2>/dev/null || cp "$TMPH" "$KB_PLIST"
+        fi
+        /usr/libexec/PlistBuddy -c "Print :AppleSymbolicHotKeys" "$tmp/edit.plist" >/dev/null 2>&1 \
+            || /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys dict" "$tmp/edit.plist" || return 1
+        ids="60 61"; [ "$choice" = "3" ] && ids="$ids 64"
+        expected=""
+        for id in $ids; do
+            enabled=false
+            [ "$id" = "60" ] && [ "$choice" != "4" ] && enabled=true
+            [ "$id" = "64" ] && { enabled=true; mod=1310720; }
+            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:$id" "$tmp/edit.plist" 2>/dev/null || :
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$id dict" "$tmp/edit.plist" || return 1
+            expected="$expected $id:enabled=$enabled"
+            if [ "$enabled" = "true" ]; then
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$id:value dict" "$tmp/edit.plist" || return 1
+                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$id:value:parameters array" "$tmp/edit.plist" || return 1
+                expected="$expected $id:value:type=standard $id:value:parameters:0=32 $id:value:parameters:1=49 $id:value:parameters:2=$mod"
+            fi
+        done
+        for key in $expected; do
+            want=${key#*=}; key=${key%%=*}
+            case "$key" in *:enabled) type=bool ;; *:type) type=string ;; *) type=integer ;; esac
+            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$key $type $want" "$tmp/edit.plist" || return 1
+        done
+        defaults import "$domain" "$tmp/edit.plist" || return 1
+        defaults export "$domain" "$tmp/read.plist" || return 1
+        for key in $expected; do
+            want=${key#*=}; key=${key%%=*}
+            got=$(/usr/libexec/PlistBuddy -c "Print :AppleSymbolicHotKeys:$key" "$tmp/read.plist" 2>/dev/null) || return 1
+            [ "$got" = "$want" ] || return 1
+        done
+    )
+    KB_SH_OK=0
+    kb_configure_hotkeys "$KB_CH" && KB_SH_OK=1
+    KB_INPUT_OK=1
+    /usr/libexec/PlistBuddy -c "Delete :AppleInputSourceHistory" "$TMPH" 2>/dev/null || :
+    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory array" "$TMPH" || KB_INPUT_OK=0
+    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0 dict" "$TMPH" || KB_INPUT_OK=0
+    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:InputSourceKind string Keyboard\ Layout" "$TMPH" || KB_INPUT_OK=0
+    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ Name string RussianWin" "$TMPH" || KB_INPUT_OK=0
+    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ ID integer -31717" "$TMPH" || KB_INPUT_OK=0
+    if [ "$KB_INPUT_OK" = "1" ]; then
+        defaults import com.apple.HIToolbox "$TMPH" 2>/dev/null || KB_INPUT_OK=0
+    fi
     rm -f "$TMPH"
-    # Русская — в историю выбранных (иначе macOS может выкинуть её из меню)
-    /usr/libexec/PlistBuddy -c "Delete :AppleInputSourceHistory" "$KB_PLIST" 2>/dev/null
-    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory array" "$KB_PLIST"
-    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0 dict" "$KB_PLIST"
-    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:InputSourceKind string Keyboard\ Layout" "$KB_PLIST"
-    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ Name string RussianWin" "$KB_PLIST"
-    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ ID integer -31717" "$KB_PLIST"
     # Заставляем систему перечитать: cfprefsd + агент меню ввода (это и был
     # баг «раскладка в plist есть, а флажка в менюбаре нет»)
     killall cfprefsd 2>/dev/null
@@ -976,30 +981,37 @@ if ! stage_done keyboard; then
     osascript -e 'tell application "System Events" to keystroke ""' >/dev/null 2>&1
     sleep 2
     # Caps Lock как переключатель раскладки — штатный ключ macOS (NSGlobalDomain)
-    if [ "$KB_CH" = "4" ]; then
-        defaults write NSGlobalDomain TISRomanSwitchState -int 1 2>/dev/null
-    elif [ "$KB_CH" != "5" ]; then
-        defaults write NSGlobalDomain TISRomanSwitchState -int 0 2>/dev/null
+    if [ "$KB_CH" != "5" ]; then
+        KB_CAPS=0; [ "$KB_CH" = "4" ] && KB_CAPS=1
+        defaults write NSGlobalDomain TISRomanSwitchState -int "$KB_CAPS" 2>/dev/null || KB_SH_OK=0
+        KB_CAPS_READ=$(defaults read NSGlobalDomain TISRomanSwitchState 2>/dev/null) || KB_SH_OK=0
+        [ "$KB_CAPS_READ" = "$KB_CAPS" ] || KB_SH_OK=0
+        if [ "$KB_SH_OK" = "1" ] && [ -x /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings ]; then
+            /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null \
+                || warn "Настройки сохранены, но их активация не подтвердилась. Выйди из учётной записи и войди снова."
+        fi
     fi
     # defaults read печатает ключи с пробелами В КАВЫЧКАХ: "KeyboardLayout Name" = ABC;
     # поэтому паттерн «KeyboardLayout Name = ABC» не матчился НИКОГДА — раскладка
     # записывалась, а проверка ложно падала. Матчим ключ и значение через .*
-    KB_SRCS=$(defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null)
-    if printf '%s' "$KB_SRCS" | grep -q RussianWin \
+    KB_SRCS=$(defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null) || KB_INPUT_OK=0
+    KB_STAGE_OK=0
+    if [ "$KB_INPUT_OK" = "1" ] && printf '%s' "$KB_SRCS" | grep -q RussianWin \
        && printf '%s' "$KB_SRCS" | grep -q "KeyboardLayout Name.*ABC"; then
-        ok "Раскладки: ABC + Русская, переключение: $KB_KEY (подтверждено)."
-        case "$KB_CH" in
-            1|2|3) dim "Если флажка в строке меню нет — нажми $KB_KEY один раз, иконка оживет." ;;
-            4) dim "Caps Lock переключает раскладку штатно; если нет — Настройки → Клавиатура → Источники ввода → «Использовать Caps Lock»." ;;
-        esac
-        [ "$KB_CH" = "3" ] && dim "Spotlight теперь на Ctrl+Cmd+Space."
+        if [ "$KB_SH_OK" = "1" ]; then
+            KB_STAGE_OK=1
+            ok "Настройки раскладок ABC + Русская и выбор «$KB_KEY» сохранены и перечитаны."
+            [ "$KB_CH" != "5" ] && dim "Проверь переключение. Если сочетание не применилось — выйди из учётной записи и войди снова."
+        else
+            warn "Раскладки есть, но настройка переключения не подтвердилась. Этап будет повторён при следующем запуске."
+        fi
     else
         warn "Не записалось. Открываю Настройки -> Клавиатура -> добавь Русская (+)."
         open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null
         KB_MANUAL=1
         pause
     fi
-    stage_mark keyboard
+    [ "$KB_STAGE_OK" = "1" ] && stage_mark keyboard
     phase_end "Клавиатура"
 fi
 
