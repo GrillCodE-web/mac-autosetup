@@ -1542,82 +1542,95 @@ external_mounted_vols() {
     done | sort -u
 }
 
-# Том, смонтированный VeraCrypt: сперва спрашиваем сам VeraCrypt (VC --list),
-# только потом — скан кандидатов в /Volumes
+vc_parse_list() {
+    awk '
+        NF {
+            line = $0; sub(/\r$/, "", line); n = 0
+            while (match(line, /^("[^"]*"|[^ \t"]+)([ \t]+|$)/)) {
+                token = substr(line, 1, RLENGTH)
+                line = substr(line, RLENGTH + 1)
+                sub(/[ \t]+$/, "", token)
+                if (substr(token, 1, 1) == "\"") token = substr(token, 2, length(token) - 2)
+                field[++n] = token
+            }
+            if (line != "" || n != 4 || field[1] !~ /^[1-9][0-9]*:$/) { bad = 1; exit }
+            if (field[4] == "-") next
+            if (field[4] !~ /^\// || field[4] == "/") { bad = 1; exit }
+            result = result field[4] "\n"
+        }
+        END { if (bad) exit 2; printf "%s", result }
+    '
+}
+
 vc_mounted_vol() {
-    local out v
-    if [ -x "$VC" ]; then
-        # Берем ВСЕ смонтированные тома VC, а не только первый —
-        # с двумя вставленными дисками head -1 мог взять не тот.
-        out=$("$VC" --text --list 2>/dev/null | grep -o '/Volumes/.*')
-        while IFS= read -r v; do
-            [ -n "$v" ] && [ -d "$v" ] && { echo "$v"; return 0; }
-        done <<EOF
+    local out v preferred="${1:-}" choice i=0
+    local vols=()
+    [ -x "$VC" ] || { err "VeraCrypt CLI недоступен: $VC" >&2; return 2; }
+    out=$("$VC" --text --non-interactive --list) || return 1
+    out=$(printf '%s\n' "$out" | vc_parse_list) || {
+        err "Неизвестный формат списка VeraCrypt — выбирать том небезопасно." >&2
+        return 2
+    }
+    while IFS= read -r v; do
+        [ -n "$v" ] && [ -d "$v" ] && vols+=("$v")
+    done <<EOF
 $out
 EOF
+    if [ -n "$preferred" ]; then
+        for v in "${vols[@]}"; do
+            [ "$v" = "$preferred" ] && { printf '%s\n' "$v"; return 0; }
+        done
+        return 1
     fi
-    local cands
-    cands=$(candidate_vols)
-    if [ "$(printf '%s\n' "$cands" | grep -c .)" = "1" ]; then
-        printf '%s\n' "$cands" | head -1
+    [ "${#vols[@]}" -gt 0 ] || return 1
+    if [ "${#vols[@]}" = "1" ]; then
+        printf '%s\n' "VeraCrypt подтвердил том: ${vols[0]}" >&2
+        printf '%s\n' "${vols[0]}"
         return 0
     fi
-    return 1
-}
-
-candidate_vols() {
-    local v boot
-    # df -P: одна строка на том — длинное имя устройства не ломает парсинг колонок
-    boot=$(basename "$(df -P / 2>/dev/null | tail -1 | awk '{print $NF}')" 2>/dev/null)
-    for v in /Volumes/*; do
-        [ -d "$v" ] || continue
-        [ -L "$v" ] && continue
-        case "$(basename "$v")" in
-            "Macintosh HD"|"Data"|"Preboot"|"Recovery"|"VM"|"Update"|"xarts"|"iSCPreboot"|"Hardware"|"$boot") continue ;;
-        esac
-        echo "$v"
+    printf '%s\n' "Смонтировано несколько томов VeraCrypt. Выбери диск для данных:" >&2
+    for v in "${vols[@]}"; do
+        i=$((i + 1)); printf '    %s) %s\n' "$i" "$v" >&2
     done
+    printf '%s' "Номер тома (Enter — отмена): " >&2
+    read -r choice || return 2
+    case "$choice" in ''|*[!0-9]*|0*) return 2 ;; esac
+    [ "${#choice}" -le "${#i}" ] && [ "$choice" -le "$i" ] || return 2
+    printf '%s\n' "${vols[$((choice - 1))]}"
 }
 
-# Адаптивное ожидание монтирования: до MOUNT_WAIT_MIN минут, каждые 30 сек —
-# короткая диагностика (диск виден системе? VeraCrypt том смонтирован?)
 wait_vc_mount() {
-    local limit=$(( ${MOUNT_WAIT_MIN:-30} * 2 )) n=0 v
-    while [ $n -lt $limit ]; do
-        v=$(vc_mounted_vol)
-        [ -n "$v" ] && [ -d "$v" ] && { spin_end; echo "$v"; return 0; }
-        if [ $((n % 6)) -eq 5 ]; then
-            if [ -z "$(list_external)" ]; then spin "диск не виден системе — проверь разъем, жду"
-            else spin "диск виден, том VeraCrypt еще не смонтирован — жду (Mount в окне VeraCrypt)"; fi
+    local deadline=$(( $(date +%s) + ${MOUNT_WAIT_MIN:-30} * 60 )) v rc remaining
+    while :; do
+        if v=$(vc_mounted_vol "${1:-}"); then
+            spin_end >&2
+            printf '%s\n' "$v"
+            return 0
         else
-            spin "$(L 'жду смонтированный том VeraCrypt' 'waiting for a mounted VeraCrypt volume')..."
+            rc=$?
+            [ "$rc" = "2" ] && { spin_end >&2; return 2; }
         fi
-        sleep 5; n=$((n + 1))
+        remaining=$((deadline - $(date +%s)))
+        [ "$remaining" -gt 0 ] || break
+        spin "Жду подтверждения тома через VeraCrypt CLI — смонтируй диск в окне VeraCrypt..." >&2
+        [ "$remaining" -le 5 ] || remaining=5
+        sleep "$remaining"
     done
-    spin_end
+    spin_end >&2
     return 1
 }
 
 if ! stage_done disk; then
     step "СЕКРЕТНЫЙ ДИСК / ENCRYPTED DISK" "5/6"
     phase_begin
-    # Раньше тут был жесткий exit 1 при единичном флаке сети — теперь терпеливо
-    # ждем возвращения интернета, как это делает фаза 3 (net_wait).
-    net_wait
-
     DISK_DEV=""
-    BEFORE_PLUG=$(list_external)
-    # Если том VeraCrypt УЖЕ смонтирован (диск вставили до этой фазы) — не просим
-    # перетывать: wait_new_disk ждет только НОВЫЙ диск и вечно молчал бы.
-    PRE_MOUNTED=""
-    [ "$HAVE_DISK" = "да" ] && PRE_MOUNTED=$(vc_mounted_vol 2>/dev/null || true)
     # VeraCrypt обязателен для обеих веток (подключить готовый диск или
     # зашифровать новый). Фаза приложений могла быть помечена завершенной, не
     # дойдя до него (не встал FUSE-T на медленном канале и т.п.) — тогда
     # доставляем прямо здесь сами, а не отправляем пользователя ставить руками.
-    # Исключение: том уже смонтирован — тогда VC не нужен вовсе.
-    if [ -z "$PRE_MOUNTED" ] && [ ! -d "/Applications/VeraCrypt.app" ]; then
+    if [ ! -x "$VC" ]; then
         warn "VeraCrypt не установлен (фаза приложений до него не дошла) — доставляю сейчас."
+        net_wait
         if ! pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t"; then
             install_pkg_url "$FUSET_URL" "fuse-t" || true
             pkgutil --pkgs 2>/dev/null | grep -qi "fuse-t" && ok "FUSE-T установлен." \
@@ -1625,60 +1638,13 @@ if ! stage_done disk; then
         fi
         install_dmg "$VC_URL" "VeraCrypt" "$VC_URL_ALT"
         verify_app VeraCrypt VeraCrypt || true
-        if [ ! -d "/Applications/VeraCrypt.app" ]; then
+        if [ ! -x "$VC" ]; then
             err "VeraCrypt так и не встал — без него секретный диск не подключить."
             exit 1
         fi
     fi
-    if [ "$HAVE_DISK" = "да" ] && [ -n "$PRE_MOUNTED" ]; then
-        ok "Секретный том уже смонтирован: $PRE_MOUNTED — вставлять ничего не нужно."
-        # Физический диск для UUID-сверки: берем, только если внешний ровно один.
-        [ "$(printf '%s\n' "$BEFORE_PLUG" | grep -c .)" = "1" ] && DISK_DEV=$BEFORE_PLUG
-    elif [ "$HAVE_DISK" = "да" ]; then
-        # Диск мог быть вставлен ДО этой фазы: для wait_new_disk он не «новый»,
-        # и скрипт молча ждал бы до таймаута. Если внешний ровно один — это он.
-        N_EXT=$(printf '%s\n' "$BEFORE_PLUG" | grep -c . || true)
-        if [ "$N_EXT" = "1" ]; then
-            DISK_DEV=$BEFORE_PLUG
-            info "Секретный диск уже вставлен: /dev/$DISK_DEV — перетыкать не нужно."
-        elif [ "${N_EXT:-0}" -gt 1 ]; then
-            # Несколько внешних (часто — пустые картридеры в хабе): угадать
-            # физический диск нельзя, но это и НЕ НУЖНО. Как в исходной
-            # версии: просто открываем VeraCrypt, устройство выбирает человек,
-            # а скрипт ждет появления смонтированного тома.
-            warn "Вижу несколько внешних дисков ($N_EXT) — не угадываю. Ничего страшного: дальше сам выберешь устройство в окне VeraCrypt."
-            DISK_DEV=""
-        else
-            info "Вставь свой секретный диск (который уже зашифрован)."
-            # Зашифрованный диск macOS не читает: вылезет окно «не читается» —
-            # это НОРМАЛЬНО. Кнопка «Инициализировать» там уничтожит данные.
-            warn "Если macOS покажет окно «диск не читается» — жми ТОЛЬКО «Игнорировать». «Инициализировать» — НИКОГДА."
-            DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || {
-                err "Не увидел новый диск за $DISK_WAIT_SEC сек."
-                warn "Если диск УЖЕ был вставлен — вынь и вставь еще раз. Смотрю еще $DISK_WAIT_SEC сек..."
-                DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || {
-                    # Последний шанс: USB-хабы/переходники не всегда отдают
-                    # корректный флаг external — ищем по смонтированным томам
-                    # на USB-дисках. Диагностику печатаем, чтобы не гадать.
-                    err "diskutil диск не видит. Диагностика:"
-                    dim "$(diskutil list external 2>/dev/null | head -8)"
-                    DISK_DEV=$(external_mounted_vols)
-                    N_EMV=$(printf '%s\n' "$DISK_DEV" | grep -c . || true)
-                    if [ "$N_EMV" = "1" ]; then
-                        info "Нашел по смонтированному тому на USB-диске: /dev/$DISK_DEV"
-                    elif [ "${N_EMV:-0}" -gt 1 ]; then
-                        # Не угадываем — и не надо: дальше откроем VeraCrypt,
-                        # устройство выберет человек (исходное поведение).
-                        warn "Вижу несколько USB-дисков ($N_EMV) — не угадываю. Выберешь свое устройство в окне VeraCrypt."
-                        DISK_DEV=""
-                    else
-                        err "Диск не найден никаким способом. Проверь: виден ли он в Дисковой утилите (diskutil list), попробуй другой порт/кабель напрямую без хаба."
-                        exit 1
-                    fi
-                }
-            }
-        fi
-    else
+    if [ "$HAVE_DISK" != "да" ]; then
+        BEFORE_PLUG=$(list_external)
         info "Вставь НОВЫЙ диск, который будем шифровать."
         DISK_DEV=$(wait_new_disk "$BEFORE_PLUG") || { err "Не увидел новый диск за $DISK_WAIT_SEC сек."; exit 1; }
         sleep 2
@@ -1705,21 +1671,17 @@ if ! stage_done disk; then
     DISK_UUID=""
     [ -n "$DISK_DEV" ] && DISK_UUID=$(disk_field "$DISK_DEV" DiskUUID 2>/dev/null)
 
-    if [ "$HAVE_DISK" = "да" ] && [ -n "$PRE_MOUNTED" ]; then
-        # Уже смонтирован до фазы — VeraCrypt не открываем, ждать нечего.
-        VOL_NAME=$PRE_MOUNTED
-    elif [ "$HAVE_DISK" = "да" ]; then
+    if [ "$HAVE_DISK" = "да" ]; then
         sub "Монтирование секретного диска — через VeraCrypt (пароль знаешь только ты)"
-        if [ -n "$DISK_DEV" ]; then
-            echo "    1) Открою VeraCrypt. Нажми  ${BOLD}Select Device...${NC}  -> выбери раздел своего диска (/dev/${DISK_DEV}s1)"
-        else
-            echo "    1) Открою VeraCrypt. Нажми  ${BOLD}Select Device...${NC}  -> выбери раздел своего диска (ориентируйся по размеру, строка вида /dev/diskXs1)"
-        fi
-        echo "    2) Нажми  ${BOLD}Mount${NC}  -> введи пароль диска (если был PIM — VeraCrypt сама спросит)"
-        echo "    3) Диск появится в Finder сбоку — значит смонтировался"
-        open -a VeraCrypt 2>/dev/null
-        VOL_NAME=$(wait_vc_mount) || { err "Том не появился за ${MOUNT_WAIT_MIN:-30} мин."; read -r -p "Смонтируй сам и нажми Enter..."; VOL_NAME=$(vc_mounted_vol); }
-        [ -z "$VOL_NAME" ] && { err "Так и не вижу смонтированный том. Стоп."; exit 1; }
+        warn "Если macOS покажет окно «диск не читается» — жми ТОЛЬКО «Игнорировать». «Инициализировать» — НИКОГДА."
+        echo "    1) Подключи свой диск. В VeraCrypt нажми ${BOLD}Select Device...${NC} и выбери его по размеру."
+        echo "    2) Нажми ${BOLD}Mount${NC} и введи пароль в VeraCrypt, не в этот скрипт."
+        echo "    3) Скрипт определит смонтированный том через CLI VeraCrypt."
+        open -a VeraCrypt 2>/dev/null || { err "Не удалось открыть VeraCrypt."; exit 1; }
+        VOL_NAME=$(wait_vc_mount "$(stage_val vc_mount)") || {
+            err "Ожидание тома завершено или выбор отменён. Данные не переношу."
+            exit 1
+        }
     else
         sub "Создание секретного диска — мастер VeraCrypt (пароль вводишь в него, НЕ сюда)"
         echo "    Открою VeraCrypt. В окне сделай по шагам:"
@@ -1732,18 +1694,22 @@ if ! stage_done disk; then
         echo "        (подвигай мышку в окне мастера, пока ползет шкала)"
         echo "    7)  Когда мастер скажет «Volume Created» -> Exit -> Mount том (Select Device -> Mount)"
         echo "    ${RED}ВНИМАНИЕ: мастер сотрет ВСЕ на /dev/${DISK_DEV:-diskN}. Это ты уже подтвердил выше.${NC}"
-        open -a VeraCrypt 2>/dev/null
+        open -a VeraCrypt 2>/dev/null || { err "Не удалось открыть VeraCrypt."; exit 1; }
         pause
         info "Жду, пока зашифрованный том смонтируется (до ${MOUNT_WAIT_MIN:-30} мин)..."
-        VOL_NAME=$(wait_vc_mount) || { err "Том не появился. Смонтируй его в VeraCrypt и нажми Enter."; read -r; VOL_NAME=$(vc_mounted_vol); }
-        [ -z "$VOL_NAME" ] && { err "Так и не вижу смонтированный том. Стоп."; exit 1; }
+        VOL_NAME=$(wait_vc_mount "$(stage_val vc_mount)") || {
+            err "Ожидание тома завершено или выбор отменён. Данные не переношу."
+            exit 1
+        }
     fi
 
     # Подтверждение через VeraCrypt --list: том должен быть именно VC-томом
-    if [ -x "$VC" ] && "$VC" --text --list 2>/dev/null | grep -q "$VOL_NAME"; then
+    if vc_mounted_vol "$VOL_NAME" >/dev/null; then
         ok "Том подтвержден VeraCrypt: $VOL_NAME"
+        printf 'vc_mount=%s\n' "$VOL_NAME" >> "$STAGE_FILE"
     else
-        warn "VeraCrypt CLI том не подтвердил — беру найденный в /Volumes: $VOL_NAME (проверю по содержимому ниже)."
+        err "VeraCrypt CLI не подтвердил выбранный том. Данные не переношу."
+        exit 1
     fi
     # UUID тома и физического диска — в отметки, чтобы при возобновлении
     # не спутать секретный диск с другой флешкой (см. сверку ниже).
@@ -1759,8 +1725,10 @@ if ! stage_done disk; then
     phase_end "Секретный диск"
 fi
 
-VOL_NAME=$(vc_mounted_vol)
-[ -z "$VOL_NAME" ] && { err "Секретный том не смонтирован — без него фаза данных невозможна."; exit 1; }
+VOL_NAME=$(vc_mounted_vol "${VOL_NAME:-$(stage_val vc_mount)}") || {
+    err "Выбранный секретный том не подтверждён VeraCrypt. Смонтируй его и повтори запуск."
+    exit 1
+}
 
 # Сверка тома с прошлым прогоном: ниже данные приложений уезжают на этот том и
 # заменяются симлинками, поэтому чужая флешка вместо секретного диска — это

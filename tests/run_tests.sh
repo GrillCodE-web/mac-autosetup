@@ -39,6 +39,9 @@ MIGRATE=$(extract migrate)
 [ -n "$MIGRATE" ]  || { echo "область TESTABLE migrate не найдена"; exit 1; }
 eval "$REGISTRY"
 eval "$MIGRATE"
+VC_CODE=$(awk '/^vc_parse_list\(\)|^vc_mounted_vol\(\)/ {take=1} /^if ! stage_done disk; then/ {exit} take {print}' "$TARGET")
+[ -n "$VC_CODE" ] || { echo "код определения тома VeraCrypt не найден"; exit 1; }
+eval "$VC_CODE"
 
 # --- микро-фреймворк ---------------------------------------------------------
 PASS=0; FAIL=0; CURRENT=""
@@ -73,6 +76,85 @@ skip_link() { # печатает причину пропуска и возвра
     printf '  --   %s: пропуск (эта ОС не умеет симлинки)\n' "$CURRENT"
     return 0
 }
+
+echo ""
+echo "VERACRYPT (определение тома и ожидание)"
+
+VC_W=$(fresh vc)
+mkdir -p "$VC_W/Первый том" "$VC_W/second" "$VC_W/unrelated"
+it "парсер VeraCrypt"
+assert 'declare -F vc_parse_list >/dev/null' "есть отдельный парсер CLI"
+if declare -F vc_parse_list >/dev/null; then
+    VC_LIST=$(printf '1: "/containers/Мой диск.vc" /dev/disk9 "%s/Первый том"\n2: /containers/second.vc - %s/second\n' "$VC_W" "$VC_W")
+    VC_EXPECTED=$(printf '%s/Первый том\n%s/second\n' "$VC_W" "$VC_W")
+    assert '[ "$(printf "%s\n" "$VC_LIST" | vc_parse_list)" = "$VC_EXPECTED" ]' "пробелы, кириллица, несколько томов и устройство-заглушка"
+    assert '[ -z "$(printf "3: /containers/raw.vc /dev/disk8 -\n" | vc_parse_list)" ]' "том без точки монтирования не выбирается"
+    assert '! printf "неизвестный формат\n" | vc_parse_list' "неизвестный формат отклоняется"
+    assert '! printf "1: /container /dev/disk8 /\n" | vc_parse_list' "корень системы отклоняется"
+    assert '! printf "1: /container /dev/disk8 /Volumes/not quoted\n" | vc_parse_list' "неоднозначные поля отклоняются"
+fi
+
+VC=/bin/sh
+/bin/sh() {
+    [ "$*" = "--text --non-interactive --list" ] || return 9
+    [ "${VC_RC:-0}" = "0" ] || return "$VC_RC"
+    printf '%s\n' "$VC_LIST"
+}
+VC_RC=0
+VC_LIST=$(printf '1: /container /dev/disk9 "%s/Первый том"\n' "$VC_W")
+it "выбор VeraCrypt"
+assert '[ "$(vc_mounted_vol)" = "$VC_W/Первый том" ]' "выбирается единственный подтверждённый CLI том"
+VC_LIST=$(printf '1: /first /dev/disk9 "%s/Первый том"\n2: /second /dev/disk10 %s/second\n' "$VC_W" "$VC_W")
+assert '[ "$(vc_mounted_vol <<< 2)" = "$VC_W/second" ]' "из нескольких томов выбирает пользователь"
+assert '[ "$(vc_mounted_vol "$VC_W/second" </dev/null)" = "$VC_W/second" ]' "повторная проверка сохраняет выбор"
+assert '! vc_mounted_vol "$VC_W/missing" </dev/null' "пропавший выбранный том не заменяется другим"
+assert '! vc_mounted_vol <<< 9' "неверный номер не выбирает первый том"
+assert '! vc_mounted_vol </dev/null' "EOF отменяет выбор"
+VC_RC=1
+assert '! vc_mounted_vol "$VC_W/unrelated" </dev/null' "при ошибке CLI обычный каталог не становится VeraCrypt-томом"
+VC_RC=0
+VC_LIST=""
+assert '! vc_mounted_vol </dev/null' "пустой список не подменяется каталогом"
+unset -f /bin/sh
+
+VC_PHASE=$(awk '/^if ! stage_done disk; then/ {take=1} /^# Сверка тома с прошлым прогоном/ {exit} take {print}' "$TARGET")
+it "сценарий GUI → CLI"
+(
+    HAVE_DISK=да; BOLD=""; NC=""; MOUNT_WAIT_MIN=30; VOL_NAME=""
+    STAGE_FILE="$VC_W/stages"; GUI_OPENED=0
+    stage_done() { return 1; }; stage_mark() { printf '%s\n' "$1" >> "$STAGE_FILE"; }
+    stage_val() { return 0; }; vol_uuid_of() { return 0; }
+    step() { :; }; phase_begin() { :; }; phase_end() { :; }
+    sub() { :; }; ding() { :; }; spin() { :; }; spin_end() { :; }
+    list_external() { printf 'diskutil вызван\n' >> "$VC_W/unexpected"; return 1; }
+    net_wait() { printf 'сеть вызвана\n' >> "$VC_W/unexpected"; return 1; }
+    open() { [ "$*" = "-a VeraCrypt" ] || return 1; GUI_OPENED=1; }
+    /bin/sh() {
+        [ "$GUI_OPENED" = "1" ] || return 1
+        [ "$*" = "--text --non-interactive --list" ] || return 1
+        printf '1: /first /dev/disk9 "%s/Первый том"\n2: /second /dev/disk10 %s/second\n' "$VC_W" "$VC_W"
+    }
+    eval "$VC_PHASE"
+    [ "$VOL_NAME" = "$VC_W/second" ] && grep -Fxq "vc_mount=$VC_W/second" "$STAGE_FILE"
+) <<< 2
+VC_PHASE_RC=$?
+assert '[ "$VC_PHASE_RC" = "0" ]' "GUI открывается до CLI, выбор второго тома сохраняется до фазы данных"
+assert '[ ! -e "$VC_W/unexpected" ]' "готовый диск не требует diskutil и сети"
+
+it "таймер VeraCrypt"
+(
+    spin() { :; }; spin_end() { :; }; L() { printf '%s' "$1"; }
+    vc_mounted_vol() { return 1; }
+    list_external() { return 0; }
+    clock=0
+    date() { printf '%s\n' "$clock"; }
+    sleep() { clock=$((clock + $1)); }
+    MOUNT_WAIT_MIN=1
+    wait_vc_mount >/dev/null 2>&1
+    [ "$clock" = "60" ]
+)
+VC_TIMER_RC=$?
+assert '[ "$VC_TIMER_RC" = "0" ]' "минута ожидания равна 60 секундам, а не 10"
 
 echo ""
 echo "ОТПЕЧАТКИ (опознание папки по содержимому)"
