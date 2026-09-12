@@ -1273,61 +1273,48 @@ if ! stage_done apps; then
     fi
     step_prog "Excel"
 
-    # Текстовые расширения -> Sublime Text через LaunchServices (secure plist).
-    # Раньше был duti: он на свежих macOS ставил часть расширений и молча падал
-    # на остальных — потому .txt открывался, а .md и др. нет. Идём напрямую
-    # в plist upsert'ом и ПЕРЕЧИТЫВАЕМ результат на каждом расширении.
     if app_installed sublime; then
         SUB_BUNDLE=$(defaults read "/Applications/Sublime Text.app/Contents/Info" CFBundleIdentifier 2>/dev/null)
         if [ -n "$SUB_BUNDLE" ]; then
-            LSDOMAIN="com.apple.LaunchServices/com.apple.launchservices.secure"
-            ls_upsert() { # ls_upsert <uti> <bundle>
-                local uti="$1" bundle="$2" n i cur
-                n=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null | grep -c "Dict {" || true)
-                i=0
-                while [ "$i" -lt "${n:-0}" ]; do
-                    cur=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers:$i:LSItemContentTypes" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null)
-                    if [ "$cur" = "$uti" ]; then
-                        /usr/libexec/PlistBuddy -c "Set :LSHandlers:$i:LSHandlerRoleAll $bundle" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null && return 0
-                        /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i:LSHandlerRoleAll string $bundle" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null && return 0
-                        return 1
-                    fi
-                    i=$((i + 1))
-                done
-                /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i dict" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null || return 1
-                /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i:LSItemContentTypes string $uti" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null
-                /usr/libexec/PlistBuddy -c "Add :LSHandlers:$i:LSHandlerRoleAll string $bundle" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null
+            ls_configure_sublime() {
+                osascript -l JavaScript - "$@" <<'SUBLIME_JXA'
+ObjC.import('CoreServices');
+function run(argv) {
+    var bundle = argv[0];
+    var extensions = argv.slice(1);
+    if (!bundle || !extensions.length) throw new Error('Не заданы приложение или расширения');
+    var failed = [];
+    extensions.forEach(function (ext) {
+        try {
+            var uti = $.UTTypeCreatePreferredIdentifierForTag($.kUTTagClassFilenameExtension, $(ext), null);
+            if (!uti || !ObjC.unwrap(uti)) throw new Error('Не определён тип файла');
+            var status = $.LSSetDefaultRoleHandlerForContentType(uti, $.kLSRolesAll, $(bundle));
+            if (status !== 0) throw new Error('LaunchServices: код ' + status);
+            var handler = $.LSCopyDefaultRoleHandlerForContentType(uti, $.kLSRolesAll);
+            var actual = handler ? ObjC.unwrap(handler) : '';
+            if (!actual || actual.toLowerCase() !== bundle.toLowerCase()) {
+                throw new Error('Системный обработчик: ' + (actual || 'не определён'));
             }
-            ls_verify() { # ls_verify <uti> <bundle>
-                local uti="$1" bundle="$2" n i cur h
-                n=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null | grep -c "Dict {" || true)
-                i=0
-                while [ "$i" -lt "${n:-0}" ]; do
-                    cur=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers:$i:LSItemContentTypes" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null)
-                    if [ "$cur" = "$uti" ]; then
-                        h=$(/usr/libexec/PlistBuddy -c "Print :LSHandlers:$i:LSHandlerRoleAll" "$HOME/Library/Preferences/$LSDOMAIN.plist" 2>/dev/null)
-                        [ "$h" = "$bundle" ] && return 0
-                        return 1
-                    fi
-                    i=$((i + 1))
-                done
-                return 1
+        } catch (error) {
+            failed.push('.' + ext);
+            console.log('.' + ext + ': ' + error.message);
+        }
+    });
+    if (failed.length) throw new Error('Не подтверждены: ' + failed.join(', '));
+    return 'LaunchServices подтвердил Sublime Text для ' + extensions.length + ' расширений.';
+}
+SUBLIME_JXA
             }
             # Регистрируем Sublime в LaunchServices, чтобы bundle id был известен
-            /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/Sublime Text.app" 2>/dev/null
-            EXT_OK=0; EXT_FAIL=""
-            for ext in $LS_EXTENSIONS; do
-                ls_upsert "$ext" "$SUB_BUNDLE" 2>/dev/null
-                if ls_verify "$ext" "$SUB_BUNDLE"; then EXT_OK=$((EXT_OK + 1)); else EXT_FAIL="$EXT_FAIL .$ext"; fi
-            done
-            killall cfprefsd 2>/dev/null
-            TOT=$(echo $LS_EXTENSIONS | wc -w | tr -d ' ')
-            if [ "$EXT_OK" = "$TOT" ]; then
-                ok "Текстовые расширения -> Sublime Text: все $EXT_OK подтверждены."
+            if /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/Sublime Text.app" \
+                && ls_configure_sublime "$SUB_BUNDLE" $LS_EXTENSIONS; then
+                ok "Текстовые расширения -> Sublime Text: системный обработчик подтверждён LaunchServices."
             else
-                warn "Расширения: подтверждено $EXT_OK из $TOT. Не встали:$EXT_FAIL — в Finder: правой кнопкой -> Открыть в программе -> Sublime Text -> «Всегда»."
-                dim "На Tahoe launchservicesd кэширует ассоциации: записанные могут подхватиться только после перезагрузки."
+                warn "Не все ассоциации Sublime подтверждены. Причина указана выше."
+                dim "Для .txt: Finder -> Cmd+I -> Открывать в программе -> Sublime Text -> Настроить всё…"
             fi
+        else
+            warn "Не удалось определить идентификатор Sublime Text — ассоциации не изменены."
         fi
     fi
     step_prog "Расширения"

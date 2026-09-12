@@ -21,6 +21,84 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 TARGET="$SCRIPT_DIR/../MacForge.command"
 [ -f "$TARGET" ] || { echo "не найден $TARGET"; exit 1; }
 
+if [ "${1:-}" = "--sublime" ]; then
+    node - "$TARGET" <<'SUBLIME_TEST'
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const match = source.match(/<<'SUBLIME_JXA'\r?\n([\s\S]*?)\r?\nSUBLIME_JXA/);
+assert(match, 'Не найден настоящий код настройки LaunchServices');
+const extensions = source.match(/^LS_EXTENSIONS="([^"]+)"/m)[1].split(/\s+/);
+const bundle = 'com.sublimetext.4';
+let passed = 0;
+function test(name, check) {
+    check();
+    console.log('  ok: ' + name);
+    passed++;
+}
+function execute(options = {}, list = extensions, app = bundle) {
+    const calls = [], logs = [];
+    const bridge = value => value;
+    Object.assign(bridge, {
+        kUTTagClassFilenameExtension: 'public.filename-extension', kLSRolesAll: 0xffffffff,
+        UTTypeCreatePreferredIdentifierForTag(tag, ext, parent) {
+            assert.strictEqual(tag, 'public.filename-extension');
+            assert.strictEqual(parent, null);
+            calls.push(['type', ext]);
+            return options.noType ? null : ext === 'txt' ? 'public.plain-text' : 'test.' + ext;
+        },
+        LSSetDefaultRoleHandlerForContentType(uti, roles, handler) {
+            assert(uti.includes('.'), 'Расширение передано вместо UTI');
+            assert.strictEqual(roles, 0xffffffff);
+            assert.strictEqual(handler, app);
+            calls.push(['set', uti]);
+            return options.status || 0;
+        },
+        LSCopyDefaultRoleHandlerForContentType(uti, roles) {
+            assert.strictEqual(roles, 0xffffffff);
+            calls.push(['get', uti]);
+            if (options.queryError) throw new Error('Ошибка чтения LaunchServices');
+            return Object.hasOwn(options, 'handler') ? options.handler : app;
+        }
+    });
+    const context = { $: bridge, ObjC: { import() {}, unwrap: value => value }, console: { log: line => logs.push(line) } };
+    vm.createContext(context);
+    vm.runInContext(match[1], context);
+    let result, error;
+    try { result = context.run([app, ...list]); } catch (e) { error = e; }
+    return { calls, logs, result, error };
+}
+test('.txt назначается по public.plain-text и перечитывается через LaunchServices', () => {
+    const out = execute({}, ['txt']);
+    assert(!out.error);
+    assert.deepStrictEqual(out.calls, [['type', 'txt'], ['set', 'public.plain-text'], ['get', 'public.plain-text']]);
+});
+test('проверяется каждое настроенное расширение', () => {
+    const out = execute();
+    assert(!out.error);
+    assert.strictEqual(out.calls.filter(c => c[0] === 'get').length, extensions.length);
+});
+test('ошибка назначения не считается успехом', () => {
+    const out = execute({ status: -50 }, ['txt']);
+    assert(out.error && out.logs[0].includes('-50'));
+    assert(!out.calls.some(c => c[0] === 'get'));
+});
+test('оставшийся TextEdit обнаруживается', () => assert(execute({ handler: 'com.apple.TextEdit' }, ['txt']).error));
+test('отсутствующий обработчик обнаруживается', () => assert(execute({ handler: null }, ['txt']).error));
+test('ошибка системного запроса обнаруживается', () => assert(execute({ queryError: true }, ['txt']).error));
+test('неопределённый UTI не передаётся на запись', () => {
+    const out = execute({ noType: true }, ['txt']);
+    assert(out.error && !out.calls.some(c => c[0] === 'set'));
+});
+test('регистр bundle ID не вызывает ложную ошибку', () => assert(!execute({ handler: bundle.toUpperCase() }, ['txt']).error));
+test('нет расширений — нет ложного успеха', () => assert(execute({}, []).error));
+test('нет bundle ID — нет ложного успеха', () => assert(execute({}, ['txt'], '').error));
+console.log('Проверок с заглушками LaunchServices прошло: ' + passed);
+SUBLIME_TEST
+    exit $?
+fi
+
 # --- заглушки вывода: тестируемые функции зовут err/warn/ok/info/dim ---------
 LAST_MSG=""
 err()  { LAST_MSG="$*"; [ -n "${VERBOSE:-}" ] && echo "    err:  $*"; return 0; }
@@ -283,6 +361,7 @@ W=$(fresh rdd2)
 mkdir -p "$W/vol/Empty"
 it "пустой диск"
 assert '[ "$(resolve_data_dir "$W/vol")" = "$W/vol/DataAPP" ]' "без опознанных папок создаётся DataAPP"
+
 
 echo ""
 if [ "$FAIL" = "0" ]; then
