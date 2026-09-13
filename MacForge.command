@@ -27,7 +27,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v13.2-2026.08.31 — геолокация по STIG (kill locationd + верификация демоном), Wi-Fi радио с фолбэком ifconfig для Tahoe, adprivacyd перезапуск после AdLib, живой URL панели Сети вместо мёртвого Network-Firewall, только Apple Silicon (Intel выпилен), поддержка macOS 14-15/26/27 (Ventura выпилена: EOL), умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 8 вопросов (сон экрана, автовыход, сочетание раскладки: Ctrl/Option/Cmd+Space, Caps Lock), верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через LaunchServices, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
+readonly SCRIPT_VERSION="v13.2-2026.08.31 — геолокация по STIG (kill locationd + верификация демоном), Wi-Fi радио с фолбэком ifconfig для Tahoe, adprivacyd перезапуск после AdLib, живой URL панели Сети вместо мёртвого Network-Firewall, только Apple Silicon (Intel выпилен), поддержка macOS 14-15/26/27 (Ventura выпилена: EOL), умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 8 вопросов (сон экрана, автовыход, сочетание раскладки: Ctrl/Option/Cmd+Space, Caps Lock), верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через secure plist без системных окон, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -1318,42 +1318,67 @@ if ! stage_done apps; then
     if app_installed sublime; then
         SUB_BUNDLE=$(defaults read "/Applications/Sublime Text.app/Contents/Info" CFBundleIdentifier 2>/dev/null)
         if [ -n "$SUB_BUNDLE" ]; then
-            ls_configure_sublime() {
-                osascript -l JavaScript - "$@" <<'SUBLIME_JXA'
-ObjC.import('CoreServices');
-function run(argv) {
-    var bundle = argv[0];
-    var extensions = argv.slice(1);
-    if (!bundle || !extensions.length) throw new Error('Не заданы приложение или расширения');
-    var failed = [];
-    extensions.forEach(function (ext) {
-        try {
-            var uti = $.UTTypeCreatePreferredIdentifierForTag($.kUTTagClassFilenameExtension, $(ext), null);
-            if (!uti || !ObjC.unwrap(uti)) throw new Error('Не определён тип файла');
-            var status = $.LSSetDefaultRoleHandlerForContentType(uti, $.kLSRolesAll, $(bundle));
-            if (status !== 0) throw new Error('LaunchServices: код ' + status);
-            var handler = $.LSCopyDefaultRoleHandlerForContentType(uti, $.kLSRolesAll);
-            var actual = handler ? ObjC.unwrap(handler) : '';
-            if (!actual || actual.toLowerCase() !== bundle.toLowerCase()) {
-                throw new Error('Системный обработчик: ' + (actual || 'не определён'));
+            # Ассоциации пишем НАПРЯМУЮ в secure plist LaunchServices и сбрасываем
+            # кэш — молча, без единого окна. JXA/API-способ
+            # (LSSetDefaultRoleHandlerForContentType) на macOS 14+ на КАЖДОЕ из
+            # 18 расширений кидает системное окно подтверждения — с ним
+            # пользователь кликает «разрешить» до посинения.
+            LS_PLIST="$HOME/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist"
+            LS_PB=/usr/libexec/PlistBuddy
+            ls_find_handler() { # ls_find_handler <ext> -> индекс записи или пусто
+                local i=0 tag class
+                while "$LS_PB" -c "Print :LSHandlers:$i" "$LS_PLIST" >/dev/null 2>&1; do
+                    tag=$("$LS_PB" -c "Print :LSHandlers:$i:LSHandlerContentTag" "$LS_PLIST" 2>/dev/null)
+                    class=$("$LS_PB" -c "Print :LSHandlers:$i:LSHandlerContentTagClass" "$LS_PLIST" 2>/dev/null)
+                    if [ "$tag" = "$1" ] && [ "$class" = "public.filename-extension" ]; then echo "$i"; return 0; fi
+                    i=$((i + 1))
+                done
+                return 1
             }
-        } catch (error) {
-            failed.push('.' + ext);
-            console.log('.' + ext + ': ' + error.message);
-        }
-    });
-    if (failed.length) throw new Error('Не подтверждены: ' + failed.join(', '));
-    return 'LaunchServices подтвердил Sublime Text для ' + extensions.length + ' расширений.';
-}
-SUBLIME_JXA
+            ls_configure_sublime() { # ls_configure_sublime <bundle> <ext...>
+                local bundle="$1"; shift
+                [ -n "$bundle" ] && [ "$#" -gt 0 ] || return 1
+                [ -f "$LS_PLIST" ] || "$LS_PB" -c "Add :LSHandlers array" "$LS_PLIST" >/dev/null 2>&1
+                "$LS_PB" -c "Print :LSHandlers" "$LS_PLIST" >/dev/null 2>&1 \
+                    || "$LS_PB" -c "Add :LSHandlers array" "$LS_PLIST" >/dev/null 2>&1 \
+                    || return 1
+                local ext idx failed=""
+                for ext in "$@"; do
+                    idx=$(ls_find_handler "$ext")
+                    if [ -n "$idx" ]; then
+                        "$LS_PB" -c "Set :LSHandlers:$idx:LSHandlerRoleAll $bundle" "$LS_PLIST" 2>/dev/null \
+                            || "$LS_PB" -c "Add :LSHandlers:$idx:LSHandlerRoleAll string $bundle" "$LS_PLIST" 2>/dev/null \
+                            || failed="$failed .$ext"
+                    else
+                        idx=0
+                        while "$LS_PB" -c "Print :LSHandlers:$idx" "$LS_PLIST" >/dev/null 2>&1; do idx=$((idx + 1)); done
+                        { "$LS_PB" -c "Add :LSHandlers:$idx dict" "$LS_PLIST" \
+                            && "$LS_PB" -c "Add :LSHandlers:$idx:LSHandlerContentTag string $ext" "$LS_PLIST" \
+                            && "$LS_PB" -c "Add :LSHandlers:$idx:LSHandlerContentTagClass string public.filename-extension" "$LS_PLIST" \
+                            && "$LS_PB" -c "Add :LSHandlers:$idx:LSHandlerRoleAll string $bundle" "$LS_PLIST"; } 2>/dev/null \
+                            || failed="$failed .$ext"
+                    fi
+                done
+                # Сброс кэшей, иначе Finder/«Открыть в программе» увидят старое.
+                killall cfprefsd 2>/dev/null; killall lsd 2>/dev/null
+                [ -z "$failed" ] || { warn "Не записались расширения:$failed"; return 1; }
+                # Контроль: перечитываем plist и сверяем каждый обработчик.
+                for ext in "$@"; do
+                    idx=$(ls_find_handler "$ext")
+                    [ -n "$idx" ] || { warn "Расширение .$ext не записалось."; return 1; }
+                    [ "$("$LS_PB" -c "Print :LSHandlers:$idx:LSHandlerRoleAll" "$LS_PLIST" 2>/dev/null)" = "$bundle" ] \
+                        || { warn "Расширение .$ext указывает не на Sublime."; return 1; }
+                done
+                return 0
             }
             # Регистрируем Sublime в LaunchServices, чтобы bundle id был известен
-            if /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/Sublime Text.app" \
-                && ls_configure_sublime "$SUB_BUNDLE" $LS_EXTENSIONS; then
-                ok "Текстовые расширения -> Sublime Text: системный обработчик подтверждён LaunchServices."
+            /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+                -f "/Applications/Sublime Text.app" 2>/dev/null
+            if ls_configure_sublime "$SUB_BUNDLE" $LS_EXTENSIONS; then
+                ok "Текстовые расширения -> Sublime Text: записаны в LaunchServices без системных окон."
             else
-                warn "Не все ассоциации Sublime подтверждены. Причина указана выше."
-                dim "Для .txt: Finder -> Cmd+I -> Открывать в программе -> Sublime Text -> Настроить всё…"
+                warn "Не все ассоциации Sublime записались. Причина указана выше."
+                dim "Для .txt: Finder -> Cmd+I -> Открывать в программе -> Sublime Text -> Настроить всё..."
             fi
         else
             warn "Не удалось определить идентификатор Sublime Text — ассоциации не изменены."

@@ -96,83 +96,9 @@ KEYBOARD_TEST
     exit $?
 fi
 
-if [ "${1:-}" = "--sublime" ]; then
-    node - "$TARGET" <<'SUBLIME_TEST'
-const fs = require('fs');
-const vm = require('vm');
-const assert = require('assert');
-const source = fs.readFileSync(process.argv[2], 'utf8');
-const match = source.match(/<<'SUBLIME_JXA'\r?\n([\s\S]*?)\r?\nSUBLIME_JXA/);
-assert(match, 'Не найден настоящий код настройки LaunchServices');
-const extensions = source.match(/^LS_EXTENSIONS="([^"]+)"/m)[1].split(/\s+/);
-const bundle = 'com.sublimetext.4';
-let passed = 0;
-function test(name, check) {
-    check();
-    console.log('  ok: ' + name);
-    passed++;
-}
-function execute(options = {}, list = extensions, app = bundle) {
-    const calls = [], logs = [];
-    const bridge = value => value;
-    Object.assign(bridge, {
-        kUTTagClassFilenameExtension: 'public.filename-extension', kLSRolesAll: 0xffffffff,
-        UTTypeCreatePreferredIdentifierForTag(tag, ext, parent) {
-            assert.strictEqual(tag, 'public.filename-extension');
-            assert.strictEqual(parent, null);
-            calls.push(['type', ext]);
-            return options.noType ? null : ext === 'txt' ? 'public.plain-text' : 'test.' + ext;
-        },
-        LSSetDefaultRoleHandlerForContentType(uti, roles, handler) {
-            assert(uti.includes('.'), 'Расширение передано вместо UTI');
-            assert.strictEqual(roles, 0xffffffff);
-            assert.strictEqual(handler, app);
-            calls.push(['set', uti]);
-            return options.status || 0;
-        },
-        LSCopyDefaultRoleHandlerForContentType(uti, roles) {
-            assert.strictEqual(roles, 0xffffffff);
-            calls.push(['get', uti]);
-            if (options.queryError) throw new Error('Ошибка чтения LaunchServices');
-            return Object.hasOwn(options, 'handler') ? options.handler : app;
-        }
-    });
-    const context = { $: bridge, ObjC: { import() {}, unwrap: value => value }, console: { log: line => logs.push(line) } };
-    vm.createContext(context);
-    vm.runInContext(match[1], context);
-    let result, error;
-    try { result = context.run([app, ...list]); } catch (e) { error = e; }
-    return { calls, logs, result, error };
-}
-test('.txt назначается по public.plain-text и перечитывается через LaunchServices', () => {
-    const out = execute({}, ['txt']);
-    assert(!out.error);
-    assert.deepStrictEqual(out.calls, [['type', 'txt'], ['set', 'public.plain-text'], ['get', 'public.plain-text']]);
-});
-test('проверяется каждое настроенное расширение', () => {
-    const out = execute();
-    assert(!out.error);
-    assert.strictEqual(out.calls.filter(c => c[0] === 'get').length, extensions.length);
-});
-test('ошибка назначения не считается успехом', () => {
-    const out = execute({ status: -50 }, ['txt']);
-    assert(out.error && out.logs[0].includes('-50'));
-    assert(!out.calls.some(c => c[0] === 'get'));
-});
-test('оставшийся TextEdit обнаруживается', () => assert(execute({ handler: 'com.apple.TextEdit' }, ['txt']).error));
-test('отсутствующий обработчик обнаруживается', () => assert(execute({ handler: null }, ['txt']).error));
-test('ошибка системного запроса обнаруживается', () => assert(execute({ queryError: true }, ['txt']).error));
-test('неопределённый UTI не передаётся на запись', () => {
-    const out = execute({ noType: true }, ['txt']);
-    assert(out.error && !out.calls.some(c => c[0] === 'set'));
-});
-test('регистр bundle ID не вызывает ложную ошибку', () => assert(!execute({ handler: bundle.toUpperCase() }, ['txt']).error));
-test('нет расширений — нет ложного успеха', () => assert(execute({}, []).error));
-test('нет bundle ID — нет ложного успеха', () => assert(execute({}, ['txt'], '').error));
-console.log('Проверок с заглушками LaunchServices прошло: ' + passed);
-SUBLIME_TEST
-    exit $?
-fi
+# Ассоциации Sublime больше не идут через JXA/LaunchServices API (на macOS 14+
+# каждое LSSetDefaultRoleHandlerForContentType кидает системное окно) — теперь
+# через secure plist; см. bash-тесты "SUBLIME (secure plist)" ниже.
 
 # --- заглушки вывода: тестируемые функции зовут err/warn/ok/info/dim ---------
 LAST_MSG=""
@@ -229,6 +155,92 @@ skip_link() { # печатает причину пропуска и возвра
     printf '  --   %s: пропуск (эта ОС не умеет симлинки)\n' "$CURRENT"
     return 0
 }
+
+echo ""
+echo "SUBLIME (ассоциации через secure plist, без системных окон)"
+
+SUB_CODE=$(awk '/^            ls_find_handler\(\)/{take=1} take{print} take && /^            \}$/{c++} c==2{exit}' "$TARGET")
+[ -n "$SUB_CODE" ] || { echo "код ассоциаций Sublime не найден"; exit 1; }
+eval "$SUB_CODE"
+
+# Мок PlistBuddy: записи хранит строками "idx|KEY|value" в <plist>.state
+pb_mock() {
+    local cmd="$2" file="$3" state="$3.state" rest i key val line
+    case "$cmd" in
+        "Print :LSHandlers")
+            [ -f "$state" ] || return 1; echo "Array {}" ;;
+        "Add :LSHandlers array")
+            [ -f "$state" ] && return 1
+            : > "$state"; : > "$file" ;;
+        "Print :LSHandlers:"*)
+            rest="${cmd#Print :LSHandlers:}"
+            case "$rest" in
+                *:*)
+                    i="${rest%%:*}"; key="${rest#*:}"
+                    line=$(grep -m1 "^$i|$key|" "$state" 2>/dev/null) || return 1
+                    printf '%s\n' "${line#*|*|}" ;;
+                *)
+                    [ -f "$state" ] && grep -q "^$rest|" "$state" ;;
+            esac ;;
+        "Add :LSHandlers:"*" dict")
+            i="${cmd#Add :LSHandlers:}"; i="${i% dict}"
+            echo "$i|__dict__|1" >> "$state" ;;
+        "Add :LSHandlers:"*" string "*)
+            rest="${cmd#Add :LSHandlers:}"
+            i="${rest%%:*}"; rest="${rest#*:}"
+            key="${rest%% string *}"; val="${rest#* string }"
+            echo "$i|$key|$val" >> "$state" ;;
+        "Set :LSHandlers:"*)
+            [ -n "${PB_NO_SET:-}" ] && return 1
+            rest="${cmd#Set :LSHandlers:}"
+            i="${rest%%:*}"; rest="${rest#*:}"
+            key="${rest%% *}"; val="${rest#* }"
+            grep -q "^$i|$key|" "$state" 2>/dev/null || return 1
+            grep -v "^$i|$key|" "$state" > "$state.tmp"; echo "$i|$key|$val" >> "$state.tmp"
+            mv "$state.tmp" "$state" ;;
+        *) return 9 ;;
+    esac
+}
+killall() { echo "$1" >> "$KILL_LOG"; }
+
+W=$(fresh lsx); LS_PLIST="$W/secure.plist"; LS_PB=pb_mock; KILL_LOG="$W/kill.log"; : > "$KILL_LOG"
+it "свежая установка"
+assert 'ls_configure_sublime com.sublimetext.4 txt md py' "все расширения записаны молча"
+assert '[ "$(grep -c "|LSHandlerContentTag|" "$LS_PLIST.state")" = 3 ]' "ровно 3 записи-расширения"
+assert '[ "$(grep -c "|LSHandlerRoleAll|com.sublimetext.4" "$LS_PLIST.state")" = 3 ]' "обработчик везде Sublime"
+assert 'grep -qx cfprefsd "$KILL_LOG" && grep -qx lsd "$KILL_LOG"' "кэши cfprefsd и lsd сброшены"
+
+it "существующий обработчик"
+LS_PLIST="$W/s2.plist"; : > "$LS_PLIST"
+printf '%s\n' "0|__dict__|1" "0|LSHandlerContentTag|txt" "0|LSHandlerContentTagClass|public.filename-extension" "0|LSHandlerRoleAll|com.apple.TextEdit" > "$LS_PLIST.state"
+assert 'ls_configure_sublime com.sublimetext.4 txt' "обновление прошло"
+assert '[ "$(grep -c "|LSHandlerContentTag|txt" "$LS_PLIST.state")" = 1 ]' "запись не задублирована"
+assert '! grep -q com.apple.TextEdit "$LS_PLIST.state"' "TextEdit вытеснен"
+
+it "UTI-запись не считается нашей"
+LS_PLIST="$W/s3.plist"; : > "$LS_PLIST"
+printf '%s\n' "0|__dict__|1" "0|LSHandlerContentType|public.plain-text" "0|LSHandlerRoleAll|com.apple.TextEdit" > "$LS_PLIST.state"
+assert 'ls_configure_sublime com.sublimetext.4 txt' "добавление прошло"
+assert 'grep -q "^1|LSHandlerContentTag|txt" "$LS_PLIST.state"' "создана отдельная запись под расширение"
+
+it "ложный успех"
+assert '! ls_configure_sublime com.sublimetext.4' "без расширений — ошибка"
+assert '! ls_configure_sublime "" txt' "без bundle id — ошибка"
+
+it "сломанная запись"
+LS_PLIST="$W/s4.plist"; : > "$LS_PLIST"
+printf '%s\n' "0|__dict__|1" "0|LSHandlerContentTag|txt" "0|LSHandlerContentTagClass|public.filename-extension" "0|LSHandlerRoleAll|com.apple.TextEdit" > "$LS_PLIST.state"
+PB_NO_SET=1
+assert '! ls_configure_sublime com.sublimetext.4 txt' "невозможность записи не маскируется успехом"
+unset PB_NO_SET
+
+it "полный список скрипта"
+LS_PLIST="$W/s5.plist"
+SUB_EXTS=$(sed -n 's/^LS_EXTENSIONS="\(.*\)"/\1/p' "$TARGET")
+assert "ls_configure_sublime com.sublimetext.4 $SUB_EXTS" "весь LS_EXTENSIONS записывается"
+N_SUB=$(printf '%s\n' $SUB_EXTS | wc -l | tr -d ' ')
+assert '[ "$(grep -c "|LSHandlerContentTag|" "$LS_PLIST.state")" = "$N_SUB" ]' "записей ровно по числу расширений"
+unset -f killall
 
 echo ""
 echo "VERACRYPT (определение тома и ожидание)"
