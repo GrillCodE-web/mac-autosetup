@@ -448,8 +448,8 @@ case "$WIFI_MODE" in 1|2|3) ;; *) WIFI_MODE=1 ;; esac
 
 q 5 "Доп. программы поставить сразу? Введи буквы подряд (можно несколько):"
 echo "   M — MailMate (почта)   Q — qTox (мессенджер)   E — Excel"
-read -r -p "   Выбор [E]: " EXTRA
-EXTRA=${EXTRA:-E}
+read -r -p "   Выбор [ничего]: " EXTRA
+EXTRA=${EXTRA:-}
 INSTALL_MM=нет; INSTALL_QTOX=нет; INSTALL_EXCEL=нет
 case "$(printf '%s' "$EXTRA" | tr '[:lower:]' '[:upper:]')" in
     *M*) INSTALL_MM=да ;; esac
@@ -617,11 +617,18 @@ if ! stage_done hardening; then
         SL_MANUAL=1
     fi
 
-    # Экран входа: без подсказок пароля, без кнопок питания, без ввода от root
-    as_root defaults write /Library/Preferences/com.apple.loginwindow RetriesUntilHint -int 0 2>/dev/null
-    as_root defaults write /Library/Preferences/com.apple.loginwindow PowerOffDisabled -bool true 2>/dev/null
-    as_root defaults write /Library/Preferences/com.apple.loginwindow DisableConsoleAccess -bool true 2>/dev/null
-    ok "Экран входа: подсказки пароля, кнопки питания и вход >root отключены."
+    LW_OK=1
+    as_root defaults write /Library/Preferences/com.apple.loginwindow RetriesUntilHint -int 0 2>/dev/null || LW_OK=0
+    as_root defaults write /Library/Preferences/com.apple.loginwindow PowerOffDisabled -bool true 2>/dev/null || LW_OK=0
+    as_root defaults write /Library/Preferences/com.apple.loginwindow DisableConsoleAccess -bool true 2>/dev/null || LW_OK=0
+    LW_RET=$(as_root defaults read /Library/Preferences/com.apple.loginwindow RetriesUntilHint 2>/dev/null) || LW_OK=0
+    LW_POW=$(as_root defaults read /Library/Preferences/com.apple.loginwindow PowerOffDisabled 2>/dev/null) || LW_OK=0
+    LW_CON=$(as_root defaults read /Library/Preferences/com.apple.loginwindow DisableConsoleAccess 2>/dev/null) || LW_OK=0
+    if [ "$LW_OK" = "1" ] && [ "$LW_RET" = "0" ] && [ "$LW_POW" = "1" ] && [ "$LW_CON" = "1" ]; then
+        ok "Параметры защиты экрана входа сохранены и перечитаны."
+    else
+        warn "Экран входа: не все параметры подтвердились — перепроверь Настройки -> Экран блокировки."
+    fi
 
     # Брандмауэр + режим невидимости
     FW_MANUAL=0
@@ -677,11 +684,23 @@ if ! stage_done hardening; then
     SHARE_LEFT=0
     pgrep -x screensharingd >/dev/null 2>&1 && SHARE_LEFT=1
     pgrep -x ARDAgent >/dev/null 2>&1 && SHARE_LEFT=1
-    if as_root systemsetup -getremotelogin 2>/dev/null | grep -qi ": On"; then SHARE_LEFT=1; fi
+    if REMOTE_STATUS=$(as_root systemsetup -getremotelogin 2>/dev/null); then
+        printf '%s\n' "$REMOTE_STATUS" | grep -qiE '^Remote Login: Off[[:space:]]*$' || SHARE_LEFT=1
+    else
+        SHARE_LEFT=1
+    fi
+    if SHARE_DISABLED=$(as_root launchctl print-disabled system 2>/dev/null); then
+        for svc in com.apple.screensharing com.apple.RemoteManagement com.apple.ARDAgent; do
+            printf '%s\n' "$SHARE_DISABLED" | awk -v service="\"$svc\"" \
+                '$1 == service && $2 == "=>" && $3 == "true" {found=1} END {exit !found}' || SHARE_LEFT=1
+        done
+    else
+        SHARE_LEFT=1
+    fi
     if [ "$SHARE_LEFT" = "0" ]; then
         ok "Общий экран, удаленное управление и SSH выключены (подтверждено)."
     else
-        warn "Что-то из удаленного доступа осталось: проверь Общий доступ и Экран блокировки в Настройках."
+        warn "Отключение удалённого доступа не подтверждено: служба включена или её состояние недоступно. Проверь Общий доступ в Настройках."
         SHARE_MANUAL=1
     fi
 
@@ -707,20 +726,25 @@ if ! stage_done hardening; then
     [ -n "$LOC_PID" ] && as_root kill -9 "$LOC_PID" 2>/dev/null
     sleep 1
     LOC=$(as_root -u _locationd defaults -currentHost read /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled 2>/dev/null)
-    if [ "$LOC" = "0" ]; then ok "Службы геолокации выключены (подтверждено демоном)."
+    if [ "$LOC" = "0" ]; then ok "В настройках locationd записано отключение геолокации. Состояние тумблера проверь в Настройках."
     else warn "Геолокация — не подтвердилось. Выключи: Настройки -> Конфиденциальность и безопасность -> Службы геолокации."; fi
 
     # Аналитика и рекламный идентификатор — выкл + проверка
-    as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null
-    as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist ThirdPartyDataSubmit -bool false 2>/dev/null
-    defaults write com.apple.AdLib allowApplePersonalizedAdvertising -bool false
-    defaults write com.apple.AdLib allowIdentifierForAdvertising -bool false
-    # adprivacyd держит значения в памяти и может откатить их обратно на диск —
-    # перезапускаем, чтобы перечитал
+    ANALYTICS_OK=1
+    as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null || ANALYTICS_OK=0
+    as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist ThirdPartyDataSubmit -bool false 2>/dev/null || ANALYTICS_OK=0
+    defaults write com.apple.AdLib allowApplePersonalizedAdvertising -bool false || ANALYTICS_OK=0
+    defaults write com.apple.AdLib allowIdentifierForAdvertising -bool false || ANALYTICS_OK=0
     killall adprivacyd 2>/dev/null
-    SUB=$(as_root defaults read /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit 2>/dev/null)
-    if [ "$SUB" = "0" ]; then ok "Аналитика Apple и рекламный идентификатор выключены (подтверждено)."
-    else warn "Аналитика — перечитать не смог. Проверь: Настройки -> Конфиденциальность -> Аналитика."; fi
+    SUB=$(as_root defaults read /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit 2>/dev/null) || ANALYTICS_OK=0
+    THIRD=$(as_root defaults read /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist ThirdPartyDataSubmit 2>/dev/null) || ANALYTICS_OK=0
+    ADV=$(defaults read com.apple.AdLib allowApplePersonalizedAdvertising 2>/dev/null) || ANALYTICS_OK=0
+    IDENT=$(defaults read com.apple.AdLib allowIdentifierForAdvertising 2>/dev/null) || ANALYTICS_OK=0
+    if [ "$ANALYTICS_OK" = "1" ] && [ "$SUB" = "0" ] && [ "$THIRD" = "0" ] && [ "$ADV" = "0" ] && [ "$IDENT" = "0" ]; then
+        ok "Параметры отключения аналитики и персонализированной рекламы сохранены и перечитаны."
+    else
+        warn "Аналитика — проверка не прошла (один из ключей не выключен). Проверь: Настройки -> Конфиденциальность -> Аналитика."
+    fi
 
     # Siri — выкл + проверка
     defaults write com.apple.assistant.support "Assistant Enabled" -bool false
@@ -820,9 +844,12 @@ if ! stage_done radio; then
             [ -z "$WIFI_SVC" ] && WIFI_SVC=$(printf '%s\n' "$ALL_SVCS" | grep -i "wi-fi\|wifi\|airport" | head -1)
             if [ -n "$WIFI_SVC" ]; then
                 [ -n "$WIFI_DEV" ] && as_root networksetup -setairportpower "$WIFI_DEV" off 2>/dev/null
-                as_root networksetup -removenetworkservice "$WIFI_SVC" 2>/dev/null
-                if ! as_root networksetup -listallnetworkservices 2>/dev/null | grep -qi "wi-fi\|wifi\|airport"; then
-                    ok "Wi-Fi удален из системы (подтверждено)."
+                WIFI_REMOVE_OK=1
+                as_root networksetup -removenetworkservice "$WIFI_SVC" 2>/dev/null || WIFI_REMOVE_OK=0
+                WIFI_SERVICES=$(as_root networksetup -listallnetworkservices 2>/dev/null) || WIFI_REMOVE_OK=0
+                if [ "$WIFI_REMOVE_OK" = "1" ] && [ -n "$WIFI_SERVICES" ] \
+                    && ! printf '%s\n' "$WIFI_SERVICES" | awk 'NR > 1 {sub(/^\*/, ""); print}' | grep -Fxq -- "$WIFI_SVC"; then
+                    ok "Сетевая служба Wi-Fi удалена (список служб проверен)."
                 else
                     warn "Служба Wi-Fi еще видна — удали руками: Настройки -> Сеть."
                 fi
@@ -841,9 +868,12 @@ if ! stage_done radio; then
                     # services are disabled» — гасим интерфейс на уровне ядра.
                     # Оговорка: configd может поднять его обратно позже — это
                     # разовое гашение, а не постоянная настройка.
-                    as_root ifconfig "$WIFI_DEV" down 2>/dev/null
+                    WIFI_DOWN_OK=1
+                    as_root ifconfig "$WIFI_DEV" down 2>/dev/null || WIFI_DOWN_OK=0
                     sleep 1
-                    if ! ifconfig "$WIFI_DEV" 2>/dev/null | grep -q "<UP[,>]"; then
+                    WIFI_IF_STATE=$(ifconfig "$WIFI_DEV" 2>/dev/null) || WIFI_DOWN_OK=0
+                    if [ "$WIFI_DOWN_OK" = "1" ] && printf '%s\n' "$WIFI_IF_STATE" | grep -q 'flags=.*<.*>' \
+                        && ! printf '%s\n' "$WIFI_IF_STATE" | grep -qE '(<|,)UP(,|>)'; then
                         ok "Wi-Fi погашен через ifconfig ($WIFI_DEV, интерфейс down). Включить: sudo ifconfig $WIFI_DEV up."
                     else
                         warn "Wi-Fi не погас ни так, ни так — выключи радио руками: Настройки -> Wi-Fi."
@@ -1342,6 +1372,10 @@ SUBLIME_JXA
         info "VeraCrypt — ставлю."
         install_dmg "$VC_URL" "VeraCrypt" "$VC_URL_ALT"
         verify_app VeraCrypt VeraCrypt || true
+        # Свежескопированное приложение LaunchServices узнаёт с задержкой —
+        # регистрируем принудительно, чтобы GUI потом открылся по имени/пути.
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+            -f "/Applications/VeraCrypt.app" 2>/dev/null || true
         if [ -d "/Applications/VeraCrypt.app" ]; then
             warn "Если при запуске VeraCrypt попросит разрешить системное расширение:"
             warn "  Настройки -> Основные -> Элементы входа и расширения -> Расширения -> Драйверы -> FUSE-T."
@@ -1619,6 +1653,26 @@ wait_vc_mount() {
     return 1
 }
 
+# Открываем GUI по ПУТИ, а не по имени: только что скопированное скриптом
+# приложение может быть еще не зарегистрировано в LaunchServices, и
+# «open -a VeraCrypt» тогда падает с -10814 (как раз первый прогон после
+# установки). GUI — только удобство: том дальше ждем поллингом CLI, поэтому
+# неудача открытия не смертельна — просим открыть вручную и ждем дальше.
+vc_open_gui() {
+    # Тесты подменяют open по имени — держим старый вызов как ручной хук.
+    if declare -F have_user_app >/dev/null 2>&1 && have_user_app open; then
+        open -a VeraCrypt 2>/dev/null && return 0
+    fi
+    [ -d "/Applications/VeraCrypt.app" ] || return 0
+    if open "/Applications/VeraCrypt.app" 2>/tmp/.vc_open_err.$$; then
+        rm -f /tmp/.vc_open_err.$$
+    else
+        warn "Не смог открыть окно VeraCrypt сам: $(tail -1 /tmp/.vc_open_err.$$ 2>/dev/null)"
+        info "Открой его сам: Программы -> VeraCrypt, и продолжай шаги выше."
+        rm -f /tmp/.vc_open_err.$$
+    fi
+}
+
 if ! stage_done disk; then
     step "СЕКРЕТНЫЙ ДИСК / ENCRYPTED DISK" "5/6"
     phase_begin
@@ -1637,6 +1691,10 @@ if ! stage_done disk; then
         fi
         install_dmg "$VC_URL" "VeraCrypt" "$VC_URL_ALT"
         verify_app VeraCrypt VeraCrypt || true
+        # Свежескопированное приложение LaunchServices узнаёт с задержкой —
+        # регистрируем принудительно, чтобы GUI ниже открылся по имени/пути.
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+            -f "/Applications/VeraCrypt.app" 2>/dev/null || true
         if [ ! -x "$VC" ]; then
             err "VeraCrypt так и не встал — без него секретный диск не подключить."
             exit 1
@@ -1673,10 +1731,10 @@ if ! stage_done disk; then
     if [ "$HAVE_DISK" = "да" ]; then
         sub "Монтирование секретного диска — через VeraCrypt (пароль знаешь только ты)"
         warn "Если macOS покажет окно «диск не читается» — жми ТОЛЬКО «Игнорировать». «Инициализировать» — НИКОГДА."
-        echo "    1) Подключи свой диск. В VeraCrypt нажми ${BOLD}Select Device...${NC} и выбери его по размеру."
-        echo "    2) Нажми ${BOLD}Mount${NC} и введи пароль в VeraCrypt, не в этот скрипт."
-        echo "    3) Скрипт определит смонтированный том через CLI VeraCrypt."
-        open -a VeraCrypt 2>/dev/null || { err "Не удалось открыть VeraCrypt."; exit 1; }
+        echo -e "    1) Подключи свой диск. В VeraCrypt нажми ${BOLD}Select Device...${NC} и выбери его по размеру."
+        echo -e "    2) Нажми ${BOLD}Mount${NC} и введи пароль в VeraCrypt, не в этот скрипт."
+        echo    "    3) Скрипт определит смонтированный том через CLI VeraCrypt."
+        vc_open_gui
         VOL_NAME=$(wait_vc_mount "$(stage_val vc_mount)") || {
             err "Ожидание тома завершено или выбор отменён. Данные не переношу."
             exit 1
@@ -1684,7 +1742,7 @@ if ! stage_done disk; then
     else
         sub "Создание секретного диска — мастер VeraCrypt (пароль вводишь в него, НЕ сюда)"
         echo "    Открою VeraCrypt. В окне сделай по шагам:"
-        echo "    1)  ${BOLD}Create Volume${NC} -> Encrypt a non-system partition/drive -> Next"
+        echo -e "    1)  ${BOLD}Create Volume${NC} -> Encrypt a non-system partition/drive -> Next"
         echo "    2)  Standard VeraCrypt volume -> Next"
         echo "    3)  Select Device -> выбери /dev/${DISK_DEV:-diskN} (строка раздела, вида diskXs1) -> Next"
         echo "    4)  Алгоритмы оставь по умолчанию (AES + SHA-512) -> Next"
@@ -1692,8 +1750,8 @@ if ! stage_done disk; then
         echo "    6)  Файловая система: HFS+ (или ExFAT). Большие файлы: Yes -> Format"
         echo "        (подвигай мышку в окне мастера, пока ползет шкала)"
         echo "    7)  Когда мастер скажет «Volume Created» -> Exit -> Mount том (Select Device -> Mount)"
-        echo "    ${RED}ВНИМАНИЕ: мастер сотрет ВСЕ на /dev/${DISK_DEV:-diskN}. Это ты уже подтвердил выше.${NC}"
-        open -a VeraCrypt 2>/dev/null || { err "Не удалось открыть VeraCrypt."; exit 1; }
+        echo -e "    ${RED}ВНИМАНИЕ: мастер сотрет ВСЕ на /dev/${DISK_DEV:-diskN}. Это ты уже подтвердил выше.${NC}"
+        vc_open_gui
         pause
         info "Жду, пока зашифрованный том смонтируется (до ${MOUNT_WAIT_MIN:-30} мин)..."
         VOL_NAME=$(wait_vc_mount "$(stage_val vc_mount)") || {
@@ -2015,6 +2073,7 @@ if ! stage_done data; then
             # если её реально нет — проверка arch -x86_64, а не слепой softwareupdate.
             APP_BIN=$(find "$APP_MATCH/Contents/MacOS" -type f 2>/dev/null | head -1)
             if [ -n "$APP_BIN" ] && ! bin_archs "$APP_BIN" | grep -q arm64; then
+                info "$lbl: бинарник только под Intel — для запуска ставлю Rosetta 2 (разово, с лицензией Apple)."
                 /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null \
                     || as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
             fi
@@ -2090,22 +2149,49 @@ fi
 # ОБНОВЛЕНИЯ macOS: автоУСТАНОВКА выкл (ставили в начале), скачивание
 # в фоне — вкл (скачалось -> сам предложит -> руками подтвердил)
 # ------------------------------------------------------------
-as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool true 2>/dev/null
-as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false 2>/dev/null
-as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool true 2>/dev/null
-as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool false 2>/dev/null
-ok "Обновления macOS: скачиваются в фоне, ставятся только с твоего «Установить»."
+UPDATES_OK=1
+for UPDATE_KEY in AutomaticDownload AutomaticallyInstallMacOSUpdates ConfigDataInstall CriticalUpdateInstall; do
+    UPDATE_VALUE=false; UPDATE_EXPECTED=0
+    case "$UPDATE_KEY" in AutomaticDownload|ConfigDataInstall) UPDATE_VALUE=true; UPDATE_EXPECTED=1 ;; esac
+    as_root defaults write /Library/Preferences/com.apple.SoftwareUpdate "$UPDATE_KEY" -bool "$UPDATE_VALUE" 2>/dev/null || UPDATES_OK=0
+    UPDATE_READ=$(as_root defaults read /Library/Preferences/com.apple.SoftwareUpdate "$UPDATE_KEY" 2>/dev/null) || UPDATES_OK=0
+    [ "$UPDATE_READ" = "$UPDATE_EXPECTED" ] || UPDATES_OK=0
+done
+if [ "$UPDATES_OK" = "1" ]; then
+    ok "Параметры обновлений macOS сохранены и перечитаны: загрузка включена, автоустановка macOS отключена."
+else
+    warn "Параметры обновлений не подтвердились. Проверь Обновление ПО в Настройках."
+fi
 
 # ------------------------------------------------------------
 # ВОЗВРАТ ЗАЩИТ + ФИНАЛЬНАЯ ЧИСТКА СЛЕДОВ
 # ------------------------------------------------------------
 as_root defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int $(( AUTOLOGOUT_MIN * 60 )) 2>/dev/null
+AL_WRITE_OK=$?
 defaults -currentHost write com.apple.screensaver idleTime -int ${SAVED_SS_IDLE:-300} 2>/dev/null
+SS_WRITE_OK=$?
 as_root pmset -a displaysleep "$DISPLAY_SLEEP" 2>/dev/null
+DS_WRITE_OK=$?
 as_root pmset -a sleep 0 2>/dev/null
-DS_TXT="никогда"; [ "$DISPLAY_SLEEP" != "0" ] && DS_TXT="через $DISPLAY_SLEEP мин"
-AL_TXT="выключен"; [ "$AUTOLOGOUT_MIN" != "0" ] && AL_TXT="через $AUTOLOGOUT_MIN мин"
-ok "Экран гаснет: $DS_TXT, автовыход: $AL_TXT."
+SLEEP_WRITE_OK=$?
+POWER_READ_OK=1
+AL_DELAY=$(as_root defaults read /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null) || POWER_READ_OK=0
+SS_IDLE=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null) || POWER_READ_OK=0
+PMSET_STATE=$(as_root pmset -g custom 2>/dev/null) || POWER_READ_OK=0
+printf '%s\n' "$PMSET_STATE" | awk -v display="$DISPLAY_SLEEP" '
+    /^[^ \t].*Power:$/ { if (profiles && (d != 1 || s != 1)) bad=1; profiles++; d=0; s=0; next }
+    $1 == "displaysleep" { d++; if ($2 !~ /^[0-9]+$/ || $2 != display) bad=1 }
+    $1 == "sleep" { s++; if ($2 !~ /^[0-9]+$/ || $2 != 0) bad=1 }
+    END { exit (bad || !profiles || d != 1 || s != 1) }
+' || POWER_READ_OK=0
+if [ "$AL_WRITE_OK" = "0" ] && [ "$SS_WRITE_OK" = "0" ] && [ "$DS_WRITE_OK" = "0" ] && [ "$SLEEP_WRITE_OK" = "0" ] && \
+   [ "$POWER_READ_OK" = "1" ] && [ "$AL_DELAY" = "$((AUTOLOGOUT_MIN * 60))" ] && [ "$SS_IDLE" = "${SAVED_SS_IDLE:-300}" ]; then
+    DS_TXT="никогда"; [ "$DISPLAY_SLEEP" != "0" ] && DS_TXT="через $DISPLAY_SLEEP мин"
+    AL_TXT="выключен"; [ "$AUTOLOGOUT_MIN" != "0" ] && AL_TXT="через $AUTOLOGOUT_MIN мин"
+    ok "Экран гаснет: $DS_TXT, автовыход: $AL_TXT."
+else
+    warn "Экран и автовыход: параметры не полностью подтвердились — проверь Настройки -> Экран входа или Экран блокировки."
+fi
 
 # В Загрузках чистим ТОЛЬКО то, что могли скачать сами: раньше сносились
 # все *.dmg/*.pkg/*.zip, включая личные файлы пользователя.

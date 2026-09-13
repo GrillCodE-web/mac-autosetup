@@ -281,6 +281,7 @@ it "сценарий GUI → CLI"
     sub() { :; }; ding() { :; }; spin() { :; }; spin_end() { :; }
     list_external() { printf 'diskutil вызван\n' >> "$VC_W/unexpected"; return 1; }
     net_wait() { printf 'сеть вызвана\n' >> "$VC_W/unexpected"; return 1; }
+    have_user_app() { [ "$1" = open ]; }
     open() { [ "$*" = "-a VeraCrypt" ] || return 1; GUI_OPENED=1; }
     /bin/sh() {
         [ "$GUI_OPENED" = "1" ] || return 1
