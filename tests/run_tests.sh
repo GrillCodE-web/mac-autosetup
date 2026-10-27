@@ -437,18 +437,18 @@ mkdir -p "$W/vol/MyStuff/MailMate/Messages"
 it "голосование"
 assert '[ "$(resolve_data_dir "$W/vol")" = "$W/vol/MyStuff" ]' "корень найден по большинству голосов"
 
-# Имя вида "*_Data" срезается намеренно: на диске данные Tukan лежат как
-# Tukan_Data/me.tukan.tukan, и корнем должен стать уровень НАД Tukan_Data.
+# Имя вида "*_Data" срезается намеренно: на диске данные Telegram лежат как
+# Telegram_Data/stable, и корнем должен стать уровень НАД Telegram_Data.
 W=$(fresh rdd3)
-mkdir -p "$W/vol/Store/Tukan_Data/me.tukan.tukan"
-printf 'me.tukan.tukan' > "$W/vol/Store/Tukan_Data/me.tukan.tukan/.com.apple.containermanagerd.metadata.plist"
+mkdir -p "$W/vol/Store/Telegram_Data/stable"
+: > "$W/vol/Store/Telegram_Data/stable/accounts-metadata"
 it "суффикс _Data"
-assert '[ "$(resolve_data_dir "$W/vol")" = "$W/vol/Store" ]' "Tukan_Data срезан, корень на уровень выше"
+assert '[ "$(resolve_data_dir "$W/vol")" = "$W/vol/Store" ]' "Telegram_Data срезан, корень на уровень выше"
 
 W=$(fresh rdd2)
 mkdir -p "$W/vol/Empty"
 it "пустой диск"
-assert '[ "$(resolve_data_dir "$W/vol")" = "$W/vol/DataAPP" ]' "без опознанных папок создаётся DataAPP"
+assert '[ "$(resolve_data_dir "$W/vol")" = "$W/vol/EncriptionData" ]' "без опознанных папок создаётся EncriptionData"
 
 
 echo ""

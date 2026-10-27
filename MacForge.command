@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  АВТОНАСТРОЙКА MAC — ПОЛНЫЙ АВТОМАТ (v13)
+#  АВТОНАСТРОЙКА MAC — ПОЛНЫЙ АВТОМАТ (v2.1.27)
 #  Репозиторий: https://github.com/GrillCodE-web/mac-autosetup
-#  Человеку нужно только: ответить на 5 вопросов и ввести пароль
+#  Человеку нужно только: ответить на 6 вопросов и ввести пароль
 # ============================================================
 
 export LANG=en_US.UTF-8
@@ -27,7 +27,7 @@ GREY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-readonly SCRIPT_VERSION="v13.2-2026.08.31 — геолокация по STIG (kill locationd + верификация демоном), Wi-Fi радио с фолбэком ifconfig для Tahoe, adprivacyd перезапуск после AdLib, живой URL панели Сети вместо мёртвого Network-Firewall, только Apple Silicon (Intel выпилен), поддержка macOS 14-15/26/27 (Ventura выпилена: EOL), умный режим: реестр приложений, опознание данных по содержимому, диск только через GUI VeraCrypt, FileVault через -inputplist без показа ключа, 8 вопросов (сон экрана, автовыход, сочетание раскладки: Ctrl/Option/Cmd+Space, Caps Lock), верификация защиты, лок от двойного запуска, встроенная самопроверка, расширения в Sublime через secure plist без системных окон, Bluetooth без сторонних утилит, все расширения видны в Finder, честный dry-run (без единой мутации), возобновление после падения со сверкой тома по UUID, тайминг фаз, автообновление с GitHub, проверка версии macOS, проверка места на диске, Wi-Fi без хардкода en0, честные единицы скорости сети"
+readonly SCRIPT_VERSION="v2.1.27-2026.10.27 — US-раскладка и регион, без Tukan и Rosetta, права на приложения, исправлен Linken Sphere, Excel ставится всегда, выбор MailMate и qTox"
 echo -e "${BOLD}ВЕРСИЯ СКРИПТА: ${CYAN}${SCRIPT_VERSION}${NC}"
 
 # --- Визуальный каркас -----------------------------------------------------
@@ -114,15 +114,14 @@ yn() {
 # launchpad-URL качал VeraCrypt в мертвый хост вопреки новому коду).
 # Поменять что-то — правится прямо тут. autosetup.conf игнорируется.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FUSET_URL="https://github.com/macos-fuse-t/fuse-t/releases/download/1.2.7/fuse-t-macos-installer-1.2.7.pkg"
+FUSET_URL="https://github.com/macos-fuse-t/fuse-t/releases/download/1.2.9/fuse-t-macos-installer-1.2.9.pkg"
 # Основной источник — GitHub-релизы VeraCrypt: launchpadlibrarian.net (CDN
 # launchpad.net) из части сетей просто недоступен (curl 28, таймаут 15 сек x3).
-VC_URL="https://github.com/veracrypt/VeraCrypt/releases/download/VeraCrypt_1.26.29/VeraCrypt_FUSE-T_1.26.29.dmg"
-VC_URL_ALT="https://launchpad.net/veracrypt/trunk/1.26.29/+download/VeraCrypt_FUSE-T_1.26.29.dmg"
+VC_URL="https://github.com/veracrypt/VeraCrypt/releases/download/VeraCrypt_1.26.30/VeraCrypt_FUSE-T_1.26.30.dmg"
+VC_URL_ALT=""
 TG_URL="https://telegram.org/dl/macos/stable"
-SUBLIME_URL="https://download.sublimetext.com/sublime_text_build_4200_mac.zip"
+SUBLIME_URL="https://download.sublimetext.com/sublime_text_build_4215_mac.zip"
 SPHERE_URL_ARM64="https://cdn.ls.app/ls2_1.9.9_arm64.dmg"
-TUKAN_URL="https://tukan.me/download/mac"
 MM_URL="https://updates.mailmate-app.com/archives/MailMateBeta.tbz"
 EXCEL_URL="https://go.microsoft.com/fwlink/?linkid=525135"
 MOUNT_WAIT_MIN=30
@@ -224,15 +223,15 @@ info "$(L 'Вопросов минимум, дальше всё идет без 
 dim "$(L 'Логи не ведутся — никаких следов в системе не остается.' 'No logs are written — no traces left in the system.')"
 [ -s "$STAGE_FILE" ] && warn "$(L 'Найдены отметки прошлого прерванного прогона — завершенные фазы пропущу.' 'Found marks of an interrupted run — completed phases will be skipped.')"
 
-# Проверка версии macOS: тестирован на 14-15 (Sonoma/Sequoia), 26 (Tahoe) и 27
-# (Golden Gate). Ventura (13) выпилена: с выхода Tahoe патчей безопасности нет.
+# Проверка версии macOS: рассчитан на 14-15 (Sonoma/Sequoia), 26 (Tahoe) и 27.x
+# (проверен чтением на 27.2). Ventura (13) выпилена: патчей безопасности нет.
 # На других — предупреждаю, но продолжаю (вдруг повезло).
 MACOS_VER=$(sw_vers -productVersion 2>/dev/null)
 MACOS_MAJOR=${MACOS_VER%%.*}
 case "$MACOS_MAJOR" in
     14|15|26|27) : ;;
     13) warn "macOS 13 Ventura больше не получает обновления безопасности — обновись хотя бы до Sonoma." ;;
-    *) warn "macOS $MACOS_VER не входит в тестированные (14-15, 26, 27). Продолжаю, но смотри глазами." ;;
+    *) warn "macOS $MACOS_VER не входит в список проверенных (14, 15, 26, 27.x). Продолжаю, но смотри вывод внимательно." ;;
 esac
 
 # Автопроверка обновления скрипта на GitHub (не навязчиво: только если есть сеть)
@@ -241,7 +240,8 @@ REPO_RAW="https://raw.githubusercontent.com/GrillCodE-web/mac-autosetup/main"
 SELF_VER_SHORT="${SCRIPT_VERSION%%-*}"          # например v12.5
 REMOTE_VER=$(curl -s --max-time 5 "$REPO_RAW/MacForge.command" 2>/dev/null \
     | grep -m1 'readonly SCRIPT_VERSION=' | sed 's/.*readonly SCRIPT_VERSION="\(v[0-9.]*\).*/\1/')
-if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$SELF_VER_SHORT" ]; then
+ver_newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -1)" = "${1#v}" ]; }
+if [ -n "$REMOTE_VER" ] && ver_newer "$REMOTE_VER" "$SELF_VER_SHORT"; then
     warn "На GitHub есть новая версия скрипта: $REMOTE_VER (у тебя $SELF_VER_SHORT)."
     # В dry-run только сообщаем: перезапись файла скрипта — это тоже мутация
     if [ "$DRY_RUN" = "1" ]; then
@@ -277,13 +277,13 @@ tg_local_dir() {
     echo "$d"
 }
 
-app_keys() { printf '%s\n' telegram sublime sphere mailmate qtox tukan; }
+app_keys() { printf '%s\n' telegram sublime sphere mailmate qtox; }
 
 app_label() {
     case "$1" in
         telegram) echo "Telegram" ;;    sublime) echo "Sublime Text" ;;
         sphere)   echo "Linken Sphere" ;; mailmate) echo "MailMate" ;;
-        qtox)     echo "qTox" ;;        tukan) echo "Tukan" ;;
+        qtox)     echo "qTox" ;;
     esac
 }
 
@@ -295,7 +295,6 @@ app_src() {
         sphere)   echo "$HOME/Library/Application Support/app.ls" ;;
         mailmate) echo "$HOME/Library/Application Support/MailMate" ;;
         qtox)     echo "$HOME/Library/Application Support/Tox" ;;
-        tukan)    echo "$HOME/Library/Containers/me.tukan.tukan" ;;
     esac
 }
 
@@ -307,7 +306,6 @@ app_dst() {
         sphere)   echo "app.ls" ;;
         mailmate) echo "MailMate" ;;
         qtox)     echo "Tox" ;;
-        tukan)    echo "Tukan_Data/me.tukan.tukan" ;;
     esac
 }
 
@@ -316,7 +314,7 @@ app_bundle() {
     case "$1" in
         telegram) echo "Telegram" ;; sublime) echo "Sublime Text" ;;
         sphere)   echo "*sphere*" ;; mailmate) echo "MailMate" ;;
-        qtox)     echo "qTox" ;;     tukan) echo "*tukan*" ;;
+        qtox)     echo "qTox" ;;
         excel)    echo "Microsoft Excel" ;;
     esac
 }
@@ -336,8 +334,7 @@ fp_sphere() {
     return 1
 }
 fp_mailmate() { [ -d "$1/Messages" ]; }
-fp_qtox()     { find "$1" -maxdepth 1 -name "*.tox" 2>/dev/null | grep -q .; }
-fp_tukan()    { [ -e "$1/.com.apple.containermanagerd.metadata.plist" ] && grep -qa "me.tukan.tukan" "$1/.com.apple.containermanagerd.metadata.plist" 2>/dev/null; }
+fp_qtox()     { find "$1/" -maxdepth 1 -name "*.tox" 2>/dev/null | grep -q .; }
 
 # fp_any <папка> -> ключ приложения или пусто
 fp_any() {
@@ -352,11 +349,10 @@ fp_any() {
 # ------------------------------------------------------------
 # ПРЕДПОЛЕТНАЯ ПРОВЕРКА: что уже стоит и куда уже подключено
 # ------------------------------------------------------------
-APP_TELEGRAM=0; APP_SUBLIME=0; APP_SPHERE=0; APP_TUKAN=0; APP_VERACRYPT=0; APP_MAILMATE=0; APP_QTOX=0
+APP_TELEGRAM=0; APP_SUBLIME=0; APP_SPHERE=0; APP_VERACRYPT=0; APP_MAILMATE=0; APP_QTOX=0
 [ -d "/Applications/Telegram.app" ] && APP_TELEGRAM=1
 [ -d "/Applications/Sublime Text.app" ] && APP_SUBLIME=1
 [ -n "$(find /Applications -maxdepth 1 -iname '*sphere*.app' 2>/dev/null | head -1)" ] && APP_SPHERE=1
-[ -n "$(find /Applications -maxdepth 1 -iname '*tukan*.app' 2>/dev/null | head -1)" ] && APP_TUKAN=1
 [ -d "/Applications/VeraCrypt.app" ] && APP_VERACRYPT=1
 [ -d "/Applications/MailMate.app" ] && APP_MAILMATE=1
 [ -n "$(find /Applications -maxdepth 1 -iname 'qTox.app' 2>/dev/null | head -1)" ] && APP_QTOX=1
@@ -377,7 +373,7 @@ done
 hr
 
 # ------------------------------------------------------------
-# ВОПРОСЫ — только то, что реально нельзя решить за человека (5 шт)
+# ВОПРОСЫ — только то, что реально нельзя решить за человека (6 шт)
 # ------------------------------------------------------------
 NEW_USER=""; NEW_USER_NAME=""
 q 1 "Создать ОТДЕЛЬНУЮ учетную запись для работы (без прав админа)?"
@@ -420,15 +416,15 @@ else
 fi
 
 # Проверка Full Disk Access у Терминала — заранее, а не сюрпризом в конце.
-# Без FDA закрыты контейнеры sandbox-приложений (Tukan живет в
-# ~/Library/Containers) — их данные на диск не перенести.
+# Без FDA закрыты контейнеры sandbox-приложений (~/Library/Containers) —
+# их данные на диск не перенести.
 FDA=1
-ls "$HOME/Library/Safari" >/dev/null 2>&1 || FDA=0
+head -c1 "/Library/Application Support/com.apple.TCC/TCC.db" >/dev/null 2>&1 || FDA=0
 if [ "$FDA" = "0" ]; then
-    warn "У Терминала нет Полного доступа к диску — без него не подключить данные Tukan (sandbox-контейнер)."
+    warn "У Терминала нет Полного доступа к диску — без него не подключить данные sandbox-приложений."
     open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles" 2>/dev/null
     info "Открыл Настройки -> Конфиденциальность и безопасность -> Полный доступ к диску: включи там Терминал."
-    info "Внимание: macOS применяет это к НОВОМУ окну Терминала — если в конце Tukan так и не подключится, перезапусти скрипт: фазы подхватятся, доедет только он."
+    info "Внимание: macOS применяет это к НОВОМУ окну Терминала — если что-то так и не подключится, перезапусти скрипт: фазы подхватятся, доедут только они."
 fi
 
 q 3 "Внешний диск (флешка/SSD) для секретных данных:"
@@ -438,27 +434,27 @@ echo "           скрипт пароль диска НЕ спрашивает 
 read -r -p "   Он УЖЕ зашифрован VeraCrypt раньше? (да/нет) [да]: " HAVE_DISK
 HAVE_DISK=$(yn "${HAVE_DISK:-да}")
 
-q 4 "Wi-Fi:"
-echo "   1 — удалить службу насовсем (только кабель)  [по умолчанию]"
-echo "   2 — просто выключить радио, можно вернуть в Настройках (на Tahoe при ошибке скрипт сам погасит через ifconfig)"
-echo "   3 — не трогать вообще"
-read -r -p "   Выбор [1]: " WIFI_MODE
-WIFI_MODE=${WIFI_MODE:-1}
-case "$WIFI_MODE" in 1|2|3) ;; *) WIFI_MODE=1 ;; esac
+WIFI_MODE=1
 
-q 5 "Доп. программы поставить сразу? Введи буквы подряд (можно несколько):"
-echo "   M — MailMate (почта)   Q — qTox (мессенджер)   E — Excel"
-read -r -p "   Выбор [ничего]: " EXTRA
-EXTRA=${EXTRA:-}
-INSTALL_MM=нет; INSTALL_QTOX=нет; INSTALL_EXCEL=нет
+q 4 "Какие доп. программы поставить? Введи буквы подряд (можно несколько):"
+echo "   Всегда ставятся: Telegram, Sublime Text, Linken Sphere, VeraCrypt, FUSE-T, Excel."
+echo "   Выбираешь сам:"
+echo "     M — MailMate (почта, бета-канал)"
+echo "     Q — qTox (мессенджер)"
+EXTRA_DEF=""
+[ "$APP_MAILMATE" = "0" ] && precheck_data mailmate && EXTRA_DEF="${EXTRA_DEF}M"
+[ "$APP_QTOX" = "0" ] && precheck_data qtox && EXTRA_DEF="${EXTRA_DEF}Q"
+[ -n "$EXTRA_DEF" ] && echo "   Данные уже лежат на диске для: $EXTRA_DEF — они предложены по умолчанию."
+read -r -p "   Выбор (буквы, Enter = [${EXTRA_DEF:-ничего}], 0 = ничего): " EXTRA
+EXTRA=${EXTRA:-$EXTRA_DEF}
+[ "$EXTRA" = "0" ] && EXTRA=""
+INSTALL_MM=нет; INSTALL_QTOX=нет; INSTALL_EXCEL=да
 case "$(printf '%s' "$EXTRA" | tr '[:lower:]' '[:upper:]')" in
     *M*) INSTALL_MM=да ;; esac
 case "$(printf '%s' "$EXTRA" | tr '[:lower:]' '[:upper:]')" in
     *Q*) INSTALL_QTOX=да ;; esac
-case "$(printf '%s' "$EXTRA" | tr '[:lower:]' '[:upper:]')" in
-    *E*) INSTALL_EXCEL=да ;; esac
 
-q 6 "Через сколько ГАСИТЬ ЭКРАН (сон дисплея):"
+q 5 "Через сколько ГАСИТЬ ЭКРАН (сон дисплея):"
 echo "   1 — 1 мин   2 — 2 мин   3 — 5 мин"
 echo "   4 — 10 мин  5 — 15 мин  6 — 30 мин [по умолчанию]   7 — никогда"
 read -r -p "   Выбор [6]: " DS_CH
@@ -468,7 +464,7 @@ case "${DS_CH:-6}" in
     *) warn "Непонятный ответ — беру 30 минут."; DISPLAY_SLEEP=30 ;;
 esac
 
-q 7 "Через сколько АВТОВЫХОД из системы (бездействие):"
+q 6 "Через сколько АВТОВЫХОД из системы (бездействие):"
 echo "   1 — 5 мин   2 — 10 мин  3 — 15 мин"
 echo "   4 — 30 мин [по умолчанию]   5 — 60 мин  6 — выключить"
 read -r -p "   Выбор [4]: " AL_CH
@@ -478,22 +474,9 @@ case "${AL_CH:-4}" in
     *) warn "Непонятный ответ — беру 30 минут."; AUTOLOGOUT_MIN=30 ;;
 esac
 
-q 8 "Раскладки клавиатуры: английская + русская. Сочетание переключения:"
-echo "   1 — Ctrl + Space [по умолчанию]   2 — Option(Alt) + Space"
-echo "   3 — Cmd + Space (Spotlight переедет на Ctrl+Cmd+Space)"
-echo "   4 — Caps Lock (штатное переключение macOS)"
-echo "   5 — не трогать сочетание"
-read -r -p "   Выбор [1]: " KB_CH
-KB_CH=${KB_CH:-1}
-case "$KB_CH" in 1|2|3|4|5) ;; *) warn "Непонятный ответ — беру Ctrl+Space."; KB_CH=1 ;; esac
-case "$KB_CH" in
-    1) KB_KEY="Ctrl+Space" ;; 2) KB_KEY="Option+Space" ;; 3) KB_KEY="Cmd+Space" ;;
-    4) KB_KEY="Caps Lock" ;; 5) KB_KEY="оставить как есть" ;;
-esac
-
 # Молчаливые решения без вопросов:
 #  - данные приложений на диске подключаются всегда автоматом
-#  - часовой пояс: сам по IP; спрошу, только если не определится
+#  - часовой пояс не трогаю
 
 # --- DRY-RUN: печатаем план и выходим ДО любых изменений ---------------------
 if [ "$DRY_RUN" = "1" ]; then
@@ -504,7 +487,7 @@ if [ "$DRY_RUN" = "1" ]; then
     for k in $(app_keys); do
         lbl=$(app_label "$k"); bndl=$(app_bundle "$k")
         [ "$k" = "mailmate" ] && [ "$INSTALL_MM" != "да" ] && [ "$APP_MAILMATE" = "0" ] && continue
-        [ "$k" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && ! precheck_data qtox && continue
+        [ "$k" = "qtox" ] && [ "$INSTALL_QTOX" != "да" ] && [ "$APP_QTOX" = "0" ] && continue
         if [ -n "$(find /Applications -maxdepth 1 -iname "$bndl.app" 2>/dev/null | head -1)" ]; then
             echo "  = $lbl: приложение стоит; данные — $( [ -L "$(app_src "$k")" ] && echo 'уже на диске' || echo 'подключу к диску')"
         else
@@ -514,11 +497,10 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "  + VeraCrypt + FUSE-T — поставить, если нет"
     echo "  + FileVault — включить и ПРОВЕРИТЬ (ключ восстановления не показывается и не сохраняется)"
     echo "  + диск: $( [ "$HAVE_DISK" = "да" ] && echo 'подключить существующий (монтируешь сам в VeraCrypt)' || echo 'НОВЫЙ: шифруешь сам в окне VeraCrypt, я жду и нахожу')"
-    echo "  + часовой пояс — по IP (тихо), раскладки US+Русская, переключение: $KB_KEY, Wi-Fi режим $WIFI_MODE"
-    [ "$KB_CH" = "3" ] && echo "    (Spotlight переедет на Ctrl+Cmd+Space)"
+    echo "  + раскладка только US (ABC), язык и регион США, часовой пояс America/New_York, Wi-Fi удаляется"
     echo "  + экран гаснет: $( [ "$DISPLAY_SLEEP" = "0" ] && echo 'никогда' || echo "через $DISPLAY_SLEEP мин" ); автовыход: $( [ "$AUTOLOGOUT_MIN" = "0" ] && echo 'выключен' || echo "через $AUTOLOGOUT_MIN мин" )"
     echo "  + в конце — встроенная самопроверка (ссылки, FileVault, брандмауэр, VeraCrypt)"
-    [ "$INSTALL_EXCEL" = "да" ] && echo "  + Excel — поставить"
+    if [ -d "/Applications/Microsoft Excel.app" ]; then echo "  = Excel: приложение стоит"; else echo "  + Excel — установить"; fi
     echo ""
     ok "Конец плана. Запусти без --dry-run для реального прогона."
     exit 0
@@ -562,9 +544,12 @@ if [ "$CREATE_USER" = "да" ] && ! stage_done user; then
             && dscl_step "группа"     -create "/Users/$NEW_USER" PrimaryGroupID 20 \
             && dscl_step "домашняя"   -create "/Users/$NEW_USER" NFSHomeDirectory "/Users/$NEW_USER"
         if [ "$OK_USER" = "1" ]; then
-            # Пароль — аргументом: пайп сломался бы (его съел бы sudo -S), а dscl
-            # мог повиснуть на интерактивном запросе. В ps на миг виден — приемлемо.
-            as_root dscl . -passwd "/Users/$NEW_USER" "$USER_PASS" 2>/dev/null
+            # Пароль идет через stdin во внутренний bash, а не в командную строку sudo:
+            # sudo пишет в системный журнал всю строку COMMAND=, и пароль остался бы там
+            # открытым текстом. Первая строка потока — пароль админа (съедает sudo -S),
+            # вторая — пароль новой учетки (читает bash). В ps при вызове dscl виден
+            # лишь на доли секунды, в журнал не попадает.
+            { printf '%s\n' "$ADMIN_PASS"; printf '%s\n' "$USER_PASS"; } | sudo -S /bin/bash -c 'IFS= read -r P; exec /usr/bin/dscl . -passwd "/Users/$0" "$P"' "$NEW_USER" 2>/dev/null
             as_root createhomedir -c -u "$NEW_USER" 2>/dev/null
         fi
         if [ "$OK_USER" = "1" ] && id "$NEW_USER" &>/dev/null; then
@@ -733,9 +718,13 @@ if ! stage_done hardening; then
     ANALYTICS_OK=1
     as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit -bool false 2>/dev/null || ANALYTICS_OK=0
     as_root defaults write /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist ThirdPartyDataSubmit -bool false 2>/dev/null || ANALYTICS_OK=0
-    defaults write com.apple.AdLib allowApplePersonalizedAdvertising -bool false || ANALYTICS_OK=0
-    defaults write com.apple.AdLib allowIdentifierForAdvertising -bool false || ANALYTICS_OK=0
-    killall adprivacyd 2>/dev/null
+    for _try in 1 2 3; do
+        defaults write com.apple.AdLib allowApplePersonalizedAdvertising -bool false || ANALYTICS_OK=0
+        defaults write com.apple.AdLib allowIdentifierForAdvertising -bool false || ANALYTICS_OK=0
+        killall adprivacyd 2>/dev/null
+        sleep 2
+        [ "$(defaults read com.apple.AdLib allowIdentifierForAdvertising 2>/dev/null)" = "0" ] && [ "$(defaults read com.apple.AdLib allowApplePersonalizedAdvertising 2>/dev/null)" = "0" ] && break
+    done
     SUB=$(as_root defaults read /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit 2>/dev/null) || ANALYTICS_OK=0
     THIRD=$(as_root defaults read /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist ThirdPartyDataSubmit 2>/dev/null) || ANALYTICS_OK=0
     ADV=$(defaults read com.apple.AdLib allowApplePersonalizedAdvertising 2>/dev/null) || ANALYTICS_OK=0
@@ -886,26 +875,19 @@ if ! stage_done radio; then
         *) dim "Wi-Fi не трогаю." ;;
     esac
 
-    # Часовой пояс — молча по IP. Не определился — не трогаю, без вопросов.
-    info "Определяю часовой пояс по IP..."
-    # ipapi.co на бесплатном тарифе часто отвечает 429 RateLimited (подтверждено
-    # прогоном), а worldtimeapi.org просто лежал. Идем по двум независимым
-    # источникам — оба отдают зону IANA чистым текстом.
-    TZ_ZONE=""
-    for TZ_URL in https://ipapi.co/timezone https://ipinfo.io/timezone; do
-        TZ_ZONE=$(curl -s --max-time 8 "$TZ_URL" 2>/dev/null | tr -d '[:space:]')
-        case "$TZ_ZONE" in Europe/*|Asia/*|Africa/*|America/*|Australia/*|Pacific/*) break ;; *) TZ_ZONE="" ;; esac
-    done
-    if [ -n "$TZ_ZONE" ]; then
-        as_root systemsetup -settimezone "$TZ_ZONE" 2>/dev/null
-        readlink /etc/localtime 2>/dev/null | grep -q "$TZ_ZONE" \
-            && ok "Часовой пояс: $TZ_ZONE (подтверждено)." \
-            || warn "Часовой пояс: не подтвердился — проверь в Настройках -> Основные -> Дата и время."
-    else
-        warn "Часовой пояс по IP не определился — оставил как есть."
-    fi
-    # Авто-смену пояса в системе НЕ включаем (по решению владельца: IP скачут
-    # по штатам/городам — фоновая смена сделает только хуже).
+    as_root systemsetup -settimezone America/New_York >/dev/null 2>&1
+    if readlink /etc/localtime 2>/dev/null | grep -q "America/New_York"; then ok "Часовой пояс: America/New_York (подтверждено)."
+    else warn "Часовой пояс не подтвердился — проверь Настройки -> Основные -> Дата и время."; fi
+    defaults write NSGlobalDomain AppleLanguages -array "en-US" 2>/dev/null
+    defaults write NSGlobalDomain AppleLocale -string "en_US" 2>/dev/null
+    defaults write NSGlobalDomain AppleMeasurementUnits -string "Inches" 2>/dev/null
+    defaults write NSGlobalDomain AppleMetricUnits -bool false 2>/dev/null
+    defaults write NSGlobalDomain AppleTemperatureUnit -string "Fahrenheit" 2>/dev/null
+    LANG_READ=$(defaults read NSGlobalDomain AppleLanguages 2>/dev/null | tr -d " \n()\"")
+    LOC_READ=$(defaults read NSGlobalDomain AppleLocale 2>/dev/null)
+    if [ "$LANG_READ" = "en-US" ] && [ "$LOC_READ" = "en_US" ]; then ok "Язык и регион: English (US), единицы США (подтверждено; полностью применится после перезахода)."
+    else warn "Язык и регион не подтвердились — проверь Настройки -> Основные -> Язык и регион."; fi
+
 
     # Bluetooth: никаких сторонних утилит не качаю. Просто открываю панель
     # Настроек с Bluetooth и честно пишу, что выключить — если не подключены
@@ -917,9 +899,7 @@ if ! stage_done radio; then
 fi
 
 # ------------------------------------------------------------
-# КЛАВИАТУРА: US + Русская, сочетание переключения — по выбору (вопрос 8).
-# Ctrl+Space — дефолт: он есть на ЛЮБОЙ клавиатуре, включая PC
-# (Ctrl/Win/Alt) без клавиш Option и Command.
+# КЛАВИАТУРА: только US (ABC).
 # ------------------------------------------------------------
 if ! stage_done keyboard; then
     step "КЛАВИАТУРА / KEYBOARD"
@@ -933,10 +913,6 @@ if ! stage_done keyboard; then
     /usr/libexec/PlistBuddy -c "Add :AppleEnabledInputSources:0:InputSourceKind string Keyboard\ Layout" "$TMPH"
     /usr/libexec/PlistBuddy -c "Add :AppleEnabledInputSources:0:KeyboardLayout\ Name string ABC" "$TMPH"
     /usr/libexec/PlistBuddy -c "Add :AppleEnabledInputSources:0:KeyboardLayout\ ID integer 252" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleEnabledInputSources:1 dict" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleEnabledInputSources:1:InputSourceKind string Keyboard\ Layout" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleEnabledInputSources:1:KeyboardLayout\ Name string RussianWin" "$TMPH"
-    /usr/libexec/PlistBuddy -c "Add :AppleEnabledInputSources:1:KeyboardLayout\ ID integer -31717" "$TMPH"
     # Выбранная сейчас раскладка — ABC (иначе иконка в менюбаре может не ожить)
     /usr/libexec/PlistBuddy -c "Delete :AppleSelectedInputSources" "$TMPH" 2>/dev/null
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources array" "$TMPH"
@@ -944,61 +920,14 @@ if ! stage_done keyboard; then
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources:0:InputSourceKind string Keyboard\ Layout" "$TMPH"
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources:0:KeyboardLayout\ Name string ABC" "$TMPH"
     /usr/libexec/PlistBuddy -c "Add :AppleSelectedInputSources:0:KeyboardLayout\ ID integer 252" "$TMPH"
-    # Горячая клавиша — по выбору (вопрос 8). Модификаторы: Ctrl=262144,
-    # Option=524288, Cmd=1048576. 60/61 = пред./след. источник ввода.
-    kb_configure_hotkeys() (
-        local choice="$1" tmp domain="com.apple.symbolichotkeys" mod id enabled ids expected key want type got
-        [ "$choice" = "5" ] && return 0
-        case "$choice" in 1) mod=262144 ;; 2) mod=524288 ;; 3) mod=1048576 ;; 4) mod=0 ;; *) return 1 ;; esac
-        tmp=$(mktemp -d "${TMPDIR:-/tmp}/macforge-hotkeys.XXXXXX") || return 1
-        trap 'rm -rf "$tmp"' EXIT
-        if ! defaults export "$domain" "$tmp/edit.plist" 2>/dev/null; then
-            if [ -e "$HOME/Library/Preferences/$domain.plist" ]; then
-                cp "$HOME/Library/Preferences/$domain.plist" "$tmp/edit.plist" || return 1
-            else
-                rm -f "$tmp/edit.plist"
-                plutil -create xml1 "$tmp/edit.plist" || return 1
-            fi
-        fi
-        /usr/libexec/PlistBuddy -c "Print :AppleSymbolicHotKeys" "$tmp/edit.plist" >/dev/null 2>&1 \
-            || /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys dict" "$tmp/edit.plist" || return 1
-        ids="60 61"; [ "$choice" = "3" ] && ids="$ids 64"
-        expected=""
-        for id in $ids; do
-            enabled=false
-            [ "$id" = "60" ] && [ "$choice" != "4" ] && enabled=true
-            [ "$id" = "64" ] && { enabled=true; mod=1310720; }
-            /usr/libexec/PlistBuddy -c "Delete :AppleSymbolicHotKeys:$id" "$tmp/edit.plist" 2>/dev/null || :
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$id dict" "$tmp/edit.plist" || return 1
-            expected="$expected $id:enabled=$enabled"
-            if [ "$enabled" = "true" ]; then
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$id:value dict" "$tmp/edit.plist" || return 1
-                /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$id:value:parameters array" "$tmp/edit.plist" || return 1
-                expected="$expected $id:value:type=standard $id:value:parameters:0=32 $id:value:parameters:1=49 $id:value:parameters:2=$mod"
-            fi
-        done
-        for key in $expected; do
-            want=${key#*=}; key=${key%%=*}
-            case "$key" in *:enabled) type=bool ;; *:type) type=string ;; *) type=integer ;; esac
-            /usr/libexec/PlistBuddy -c "Add :AppleSymbolicHotKeys:$key $type $want" "$tmp/edit.plist" || return 1
-        done
-        defaults import "$domain" "$tmp/edit.plist" || return 1
-        defaults export "$domain" "$tmp/read.plist" || return 1
-        for key in $expected; do
-            want=${key#*=}; key=${key%%=*}
-            got=$(/usr/libexec/PlistBuddy -c "Print :AppleSymbolicHotKeys:$key" "$tmp/read.plist" 2>/dev/null) || return 1
-            [ "$got" = "$want" ] || return 1
-        done
-    )
-    KB_SH_OK=0
-    kb_configure_hotkeys "$KB_CH" && KB_SH_OK=1
+    KB_SH_OK=1
     KB_INPUT_OK=1
     /usr/libexec/PlistBuddy -c "Delete :AppleInputSourceHistory" "$TMPH" 2>/dev/null || :
     /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory array" "$TMPH" || KB_INPUT_OK=0
     /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0 dict" "$TMPH" || KB_INPUT_OK=0
     /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:InputSourceKind string Keyboard\ Layout" "$TMPH" || KB_INPUT_OK=0
-    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ Name string RussianWin" "$TMPH" || KB_INPUT_OK=0
-    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ ID integer -31717" "$TMPH" || KB_INPUT_OK=0
+    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ Name string ABC" "$TMPH" || KB_INPUT_OK=0
+    /usr/libexec/PlistBuddy -c "Add :AppleInputSourceHistory:0:KeyboardLayout\ ID integer 252" "$TMPH" || KB_INPUT_OK=0
     if [ "$KB_INPUT_OK" = "1" ]; then
         defaults import com.apple.HIToolbox "$TMPH" 2>/dev/null || KB_INPUT_OK=0
     fi
@@ -1010,35 +939,18 @@ if ! stage_done keyboard; then
     killall SystemUIServer 2>/dev/null
     osascript -e 'tell application "System Events" to keystroke ""' >/dev/null 2>&1
     sleep 2
-    # Caps Lock как переключатель раскладки — штатный ключ macOS (NSGlobalDomain)
-    if [ "$KB_CH" != "5" ]; then
-        KB_CAPS=0; [ "$KB_CH" = "4" ] && KB_CAPS=1
-        defaults write NSGlobalDomain TISRomanSwitchState -int "$KB_CAPS" 2>/dev/null || KB_SH_OK=0
-        KB_CAPS_READ=$(defaults read NSGlobalDomain TISRomanSwitchState 2>/dev/null) || KB_SH_OK=0
-        [ "$KB_CAPS_READ" = "$KB_CAPS" ] || KB_SH_OK=0
-        if [ "$KB_SH_OK" = "1" ] && [ -x /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings ]; then
-            /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null \
-                || warn "Настройки сохранены, но их активация не подтвердилась. Выйди из учётной записи и войди снова."
-        fi
-    fi
     # defaults read печатает ключи с пробелами В КАВЫЧКАХ: "KeyboardLayout Name" = ABC;
     # поэтому паттерн «KeyboardLayout Name = ABC» не матчился НИКОГДА — раскладка
     # записывалась, а проверка ложно падала. Матчим ключ и значение через .*
     KB_SRCS=$(defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null) || KB_INPUT_OK=0
     KB_STAGE_OK=0
-    if [ "$KB_INPUT_OK" = "1" ] && printf '%s' "$KB_SRCS" | grep -q RussianWin \
-       && printf '%s' "$KB_SRCS" | grep -q "KeyboardLayout Name.*ABC"; then
-        if [ "$KB_SH_OK" = "1" ]; then
-            KB_STAGE_OK=1
-            ok "Настройки раскладок ABC + Русская и выбор «$KB_KEY» сохранены и перечитаны."
-            [ "$KB_CH" != "5" ] && dim "Проверь переключение. Если сочетание не применилось — выйди из учётной записи и войди снова."
-        else
-            warn "Раскладки есть, но настройка переключения не подтвердилась. Этап будет повторён при следующем запуске."
-        fi
+    if [ "$KB_INPUT_OK" = "1" ] && printf '%s' "$KB_SRCS" | grep -q "KeyboardLayout Name.*ABC" \
+       && ! printf '%s' "$KB_SRCS" | grep -q RussianWin; then
+        KB_STAGE_OK=1
+        ok "Раскладка: только ABC (US), сохранено и перечитано."
     else
-        warn "Не записалось. Открываю Настройки -> Клавиатура -> добавь Русская (+)."
+        warn "Не записалось. Открываю Настройки -> Клавиатура -> оставь только ABC."
         open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null
-        KB_MANUAL=1
         pause
     fi
     [ "$KB_STAGE_OK" = "1" ] && stage_mark keyboard
@@ -1104,7 +1016,7 @@ verify_app() {
     if [ -f "$bin" ]; then
         archs=$(bin_archs "$bin")
         if [ -n "$archs" ] && ! printf '%s' "$archs" | grep -q "$ARCH"; then
-            warn "$label: стоит, но архитектура ($archs) не под $ARCH — может работать через Rosetta."
+            warn "$label: стоит, но архитектура ($archs) не под $ARCH — может не запуститься."
             return 0
         fi
     fi
@@ -1185,6 +1097,10 @@ install_dmg() { # install_dmg <url> <имя> [запасной_url]
         safe_remove_app "$(basename "$tapp")"
         if as_root cp -R "$tapp" /Applications/ 2>/dev/null; then
             as_root xattr -dr com.apple.quarantine "/Applications/$(basename "$tapp")" 2>/dev/null
+            # Приложение копируется от root, и владельцем становится root. Самообновление
+            # (Linken Sphere и др.) потом не может заменить файлы внутри бандла и падает
+            # в конце с ошибкой. Отдаём бандл пользователю — как при ручной установке.
+            as_root chown -R "$(id -un)":admin "/Applications/$(basename "$tapp")" 2>/dev/null
         else
             err "$name: не скопировался в Программы."; hdiutil detach "$mp" -quiet 2>/dev/null; rm -f "$tmp"; return 1
         fi
@@ -1220,7 +1136,7 @@ install_pkg_url() {
 if ! stage_done apps; then
     step "УСТАНОВКА ПРИЛОЖЕНИЙ / INSTALLING APPS" "3/6"
     phase_begin
-    step_prog_init 8
+    step_prog_init 7
 
     if ! app_installed telegram; then
         info "Telegram — ставлю."
@@ -1238,6 +1154,7 @@ if ! stage_done apps; then
             safe_remove_app "Sublime Text.app"
             as_root cp -R "/tmp/Sublime Text.app" /Applications/ 2>/dev/null
             as_root xattr -dr com.apple.quarantine "/Applications/Sublime Text.app" 2>/dev/null
+            as_root chown -R "$(id -un)":admin "/Applications/Sublime Text.app" 2>/dev/null
         fi
         rm -rf "/tmp/Sublime Text.app" /tmp/Sublime.zip 2>/dev/null
         verify_app "Sublime Text" "Sublime Text"
@@ -1251,11 +1168,17 @@ if ! stage_done apps; then
         install_dmg "$SPHERE_URL_ARM64" "Sphere" && verify_app "Linken Sphere" "*sphere*"
     else
         ok "Linken Sphere уже стоит."
+        SPH_APP=$(find /Applications -maxdepth 1 -iname '*sphere*.app' 2>/dev/null | head -1)
+        if [ -n "$SPH_APP" ] && [ "$(stat -f %Su "$SPH_APP" 2>/dev/null)" = "root" ]; then
+            as_root chown -R "$(id -un)":admin "$SPH_APP" 2>/dev/null
+            if [ "$(stat -f %Su "$SPH_APP" 2>/dev/null)" = "$(id -un)" ]; then ok "Linken Sphere: владелец бандла исправлен (теперь обновляется сам)."
+            else warn "Linken Sphere: не смог сменить владельца — обновление может падать; переустанови вручную."; fi
+        fi
     fi
     step_prog "Linken Sphere"
 
     # Как и qTox: данные на диске = намерение пользователя, даже если M не выбран.
-    if ! app_installed mailmate && { [ "$INSTALL_MM" = "да" ] || precheck_data mailmate; }; then
+    if ! app_installed mailmate && [ "$INSTALL_MM" = "да" ]; then
         info "MailMate — ставлю."
         MM_OK=0
         if fetch "$MM_URL" /tmp/MailMate.tbz "MailMate" && (cd /tmp && tar xjf MailMate.tbz 2>/dev/null); then
@@ -1267,6 +1190,7 @@ if ! stage_done apps; then
             safe_remove_app "MailMate.app"
             as_root cp -R "/tmp/MailMate.app" /Applications/ 2>/dev/null
             as_root xattr -dr com.apple.quarantine "/Applications/MailMate.app" 2>/dev/null
+            as_root chown -R "$(id -un)":admin "/Applications/MailMate.app" 2>/dev/null
         fi
         rm -rf /tmp/MailMate.app /tmp/MailMate.tbz 2>/dev/null
         [ "$MM_OK" = "1" ] && verify_app MailMate MailMate
@@ -1276,7 +1200,7 @@ if ! stage_done apps; then
     # Ставим, если выбран буквой Q ИЛИ данные qTox уже живут на диске (прошлая
     # попытка установки упала, а в новом прогоне Q не выбрали — приложение без
     # своих данных бессмысленно, доустанавливаем молча).
-    if ! app_installed qtox && { [ "$INSTALL_QTOX" = "да" ] || precheck_data qtox; }; then
+    if ! app_installed qtox && [ "$INSTALL_QTOX" = "да" ]; then
         info "qTox — ставлю."
         net_wait
         QTOX_URL=""
@@ -1296,14 +1220,6 @@ if ! stage_done apps; then
             || err "qTox: не поставился. Ставь вручную: https://qtox.github.io"
     fi
     step_prog "qTox"
-
-    if ! app_installed tukan; then
-        info "Tukan — ставлю."
-        install_dmg "$TUKAN_URL" "Tukan" && verify_app "Tukan" "*tukan*"
-    else
-        ok "Tukan уже стоит."
-    fi
-    step_prog "Tukan"
 
     if [ "$INSTALL_EXCEL" = "да" ]; then
         if ! app_installed excel; then
@@ -1408,21 +1324,6 @@ if ! stage_done apps; then
     else
         ok "VeraCrypt уже стоит."
     fi
-
-    # Уборка СТАРЫХ ДУБЛЕЙ в /Applications (до наших свежих установок):
-    # белое правило — "Linken Sphere 2.app" НИКОГДА не трогаем (она основная).
-    info "Проверяю старые дубли приложений в Программах..."
-    while IFS= read -r d; do
-        [ -d "$d" ] || continue
-        case "$d" in
-            "Linken Sphere 2.app"|*" 2.app"|*" copy.app"|*" копия.app") continue ;;
-        esac
-        case "$d" in
-            *" 3.app"|*" 4.app"|*" 5.app"|*" copy 2.app"|*" copy 3.app"|*" копия 2.app"|*" копия 3.app"|*" копия 4.app")
-                case "$d" in *.app) as_root rm -rf "/Applications/$d" 2>/dev/null && info "Убрал дубль: $d" ;; esac
-                ;;
-        esac
-    done < <(ls /Applications 2>/dev/null)
 
     # Linken Sphere: если рядом лежат "Linken Sphere.app" и "Linken Sphere 2.app" —
     # не удаляем молча: версии разные, данные разные. Только говорим.
@@ -1894,8 +1795,8 @@ resolve_data_dir() {
         best=$(printf '%s' "$votes" | grep . | sort | uniq -c | sort -rn | head -1 | awk '{$1=""; sub(/^ /,""); print}')
     fi
     if [ -n "$best" ] && [ "$best" != "$vol" ]; then echo "$best"; return 0; fi
-    if [ -d "$vol/DataAPP" ]; then echo "$vol/DataAPP"; return 0; fi
-    mkdir -p "$vol/DataAPP" 2>/dev/null && { echo "$vol/DataAPP"; return 0; }
+    if [ -d "$vol/EncriptionData" ]; then echo "$vol/EncriptionData"; return 0; fi
+    mkdir -p "$vol/EncriptionData" 2>/dev/null && { echo "$vol/EncriptionData"; return 0; }
     echo "$vol"
 }
 
@@ -2040,6 +1941,13 @@ if ! stage_done data; then
     DATA=$(resolve_data_dir "$VOL_NAME")
     [ "$DATA" != "$VOL_NAME" ] && info "Корень данных на диске: ${DATA#$VOL_NAME/}"
 
+    # Битые ссылки от старых версий (в никуда на этом же томе) мешают приложениям.
+    # Трогаем только симлинки с целью внутри этого тома, которой уже нет.
+    while IFS= read -r l; do
+        [ -L "$l" ] && [ ! -e "$l" ] || continue
+        case "$(readlink "$l")" in "$VOL_NAME"/*) rm -f "$l" 2>/dev/null && dim "Убрал битую ссылку: ${l#$HOME/}" ;; esac
+    done < <(find "$HOME/Library/Application Support" "$HOME/Library/Containers" "$HOME/Library/Group Containers" -maxdepth 1 -type l 2>/dev/null)
+
     LINKED_KEYS=""
     # Полный контентный скан диска: каждая опознанная папка — сразу подключаем
     while IFS= read -r d; do
@@ -2090,18 +1998,9 @@ if ! stage_done data; then
         fi
 
         # Нет ни локально, ни на диске: запускаем приложение, оно создаст папку
-        if app_installed "$key"; then
+        if app_installed "$key" && [ "$key" != "sphere" ]; then
             info "$lbl: данных нет — запускаю приложение, чтобы создало свою папку..."
             APP_MATCH=$(find /Applications -maxdepth 1 -iname "$(app_bundle "$key").app" 2>/dev/null | head -1)
-            # На Apple Silicon приложению без arm64-среза нужна Rosetta — ставим.
-            # lipo тут нельзя: это CLT-стаб (см. bin_archs). Rosetta ставим только
-            # если её реально нет — проверка arch -x86_64, а не слепой softwareupdate.
-            APP_BIN=$(find "$APP_MATCH/Contents/MacOS" -type f 2>/dev/null | head -1)
-            if [ -n "$APP_BIN" ] && ! bin_archs "$APP_BIN" | grep -q arm64; then
-                info "$lbl: бинарник только под Intel — для запуска ставлю Rosetta 2 (разово, с лицензией Apple)."
-                /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null \
-                    || as_root /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null
-            fi
             xattr -dr com.apple.quarantine "$APP_MATCH" 2>/dev/null
             # Bundle ID вместо имени: pkill -f "Sublime Text" — подстрочный матч
             # по всей командной строке, мог поймать чужой процесс (в т.ч. этот
@@ -2218,26 +2117,13 @@ else
     warn "Экран и автовыход: параметры не полностью подтвердились — проверь Настройки -> Экран входа или Экран блокировки."
 fi
 
-# В Загрузках чистим ТОЛЬКО то, что могли скачать сами: раньше сносились
-# все *.dmg/*.pkg/*.zip, включая личные файлы пользователя.
-DL="$HOME/Downloads"
-for n in Telegram Sublime Sphere MailMate qTox Tukan VeraCrypt Excel fuse-t; do
-    for f in "$DL/$n".dmg "$DL/$n".pkg "$DL/$n".zip; do
-        [ -f "$f" ] && rm -f "$f" 2>/dev/null
-    done
-done
-rm -f /tmp/*.pkg /tmp/*.dmg /tmp/*.zip /tmp/Sublime* /tmp/MailMate* /tmp/hitoolbox.plist /tmp/diskinfo.plist /tmp/disks.plist 2>/dev/null
+# Чистим только временные файлы самого скрипта (по точным именам).
+for n in Telegram Sphere qTox VeraCrypt; do rm -f "/tmp/$n.dmg" 2>/dev/null; done
+rm -f /tmp/Sublime.zip /tmp/MailMate.tbz /tmp/hitoolbox.plist /tmp/diskinfo.plist /tmp/disks.plist 2>/dev/null
 
 rm -f "$HOME/.bash_history" "$HOME/.zsh_history" "$HOME/.python_history" "$HOME/.lesshst" "$HOME/.viminfo" 2>/dev/null
-find "$HOME/Library/Application Support/com.apple.sharedfilelist" -name "*.sfl*" -delete 2>/dev/null
-rm -rf "$HOME/Library/Application Support/com.apple.sharedfilelist" 2>/dev/null
-defaults delete com.apple.finder RecentMoveAndCopyDestinations 2>/dev/null
-defaults delete com.apple.finder FXRecentFolders 2>/dev/null
-defaults delete com.apple.finder GoToField 2>/dev/null
-defaults delete com.apple.finder GoToFieldHistory 2>/dev/null
-as_root killall -HUP sharedfilelistd 2>/dev/null
 killall cfprefsd 2>/dev/null
-ok "Следы настройки стерты: загрузки, история терминала, «Недавние» в Finder, старые меню."
+ok "Следы настройки стерты: временные файлы скрипта и история терминала."
 
 # Обнуляем секреты в памяти — пароль админа больше не нужен
 ADMIN_PASS=""; unset ADMIN_PASS USER_PASS USER_PASS2
@@ -2283,7 +2169,14 @@ run_selfcheck() {
             bad=$((bad + 1))
         fi
     done
-    total=$((total + 3))
+    total=$((total + 5))
+    ADV_ID=$(defaults read com.apple.AdLib allowIdentifierForAdvertising 2>/dev/null)
+    if [ "$ADV_ID" = "0" ]; then good=$((good + 1)); row "✓" "$GREEN" "Рекл. ID" "рекламный идентификатор выключен"
+    else warnc=$((warnc + 1)); row "▲" "$YELLOW" "Рекл. ID" "не выключился — Настройки -> Конфиденциальность -> Реклама"; fi
+    SPH_CHK=$(find /Applications -maxdepth 1 -iname '*sphere*.app' 2>/dev/null | head -1)
+    if [ -z "$SPH_CHK" ]; then total=$((total - 1))
+    elif [ "$(stat -f %Su "$SPH_CHK" 2>/dev/null)" = "$(id -un)" ]; then good=$((good + 1)); row "✓" "$GREEN" "Sphere права" "владелец приложения — ты (обновление пройдёт)"
+    else bad=$((bad + 1)); row "✗" "$RED" "Sphere права" "владелец не ты — обновление может упасть"; fi
     if fdesetup status 2>/dev/null | grep -qi "is On"; then good=$((good + 1)); row "✓" "$GREEN" "FileVault" "диск зашифрован"
     else row "✗" "$RED" "FileVault" "НЕ включен"; bad=$((bad + 1)); fi
     # Без sudo: /Library/Preferences/com.apple.alf.plist обычному юзеру недоступен,
@@ -2361,7 +2254,7 @@ echo "    • AirDrop/Handoff/геолокация/аналитика/Siri — �
 echo "    • недавние приложения в Dock скрыты"
 echo "    • FileVault: шифрование включено (ключ восстановления был показан один раз в терминале, нигде не сохранен)"
 echo "    • данные приложений — на секретном диске, система смотрит на них через ссылки"
-echo "    • раскладки ABC+Русская (Ctrl+Space), часовой пояс по IP, Wi-Fi по выбору"
+echo "    • раскладка только ABC (US), язык и регион США (en_US), часовой пояс Нью-Йорк, Wi-Fi удалён"
 echo ""
 # Обещание из вопроса про Полный доступ к диску: собираем всё, что не встало
 # автоматически. Раньше флаги *_MANUAL выставлялись, но нигде не читались.
@@ -2369,7 +2262,6 @@ MANUAL_LIST=""
 [ "${SL_MANUAL:-0}" = "1" ]    && MANUAL_LIST="$MANUAL_LIST    • Блокировка «сразу»: Настройки -> Экран блокировки\n"
 [ "${FW_MANUAL:-0}" = "1" ]    && MANUAL_LIST="$MANUAL_LIST    • Брандмауэр и невидимость: Настройки -> Сеть -> Брандмауэр\n"
 [ "${SHARE_MANUAL:-0}" = "1" ] && MANUAL_LIST="$MANUAL_LIST    • Общий доступ (экран/ARD/SSH): Настройки -> Общий доступ\n"
-[ "${KB_MANUAL:-0}" = "1" ]    && MANUAL_LIST="$MANUAL_LIST    • Русская раскладка: Настройки -> Клавиатура -> Источники ввода\n"
 [ "${FDA:-1}" = "0" ]          && MANUAL_LIST="$MANUAL_LIST    • Полный доступ к диску Терминалу: Настройки -> Конфиденциальность и безопасность\n"
 if [ -n "$MANUAL_LIST" ]; then
     echo -e "  ${YELLOW}${BOLD}НУЖНО ДОДЕЛАТЬ РУКАМИ:${NC}"
@@ -2378,7 +2270,7 @@ if [ -n "$MANUAL_LIST" ]; then
 fi
 
 echo -e "  ${YELLOW}${BOLD}ПРОВЕРЬ В КОНЦЕ:${NC}"
-echo "    1) Флажок раскладки в строке меню сверху (если нет — нажми Ctrl+Space)"
+echo "    1) Раскладка в строке меню — только ABC (US)"
 echo "    2) Вставь секретный диск -> VeraCrypt -> Mount -> запусти Telegram/Sphere"
 echo ""
 echo -e "  ${GREY}Завершаю через 5 сек...${NC}"
